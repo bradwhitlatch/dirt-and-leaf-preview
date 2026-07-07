@@ -1382,7 +1382,29 @@ if (!connectionString) {
     "DATABASE_URL is not set. Dirt & Leaf now uses Postgres \u2014 copy .env.example to .env and set DATABASE_URL."
   );
 }
-var client = (0, import_postgres.default)(connectionString, { max: 1, prepare: false });
+var client = (0, import_postgres.default)(connectionString, {
+  max: 1,
+  prepare: false,
+  connect_timeout: 15
+});
+async function withRetry(fn, label) {
+  const delaysMs = [500, 1e3, 2e3];
+  let lastErr;
+  for (let attempt = 0; attempt <= delaysMs.length; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (attempt === delaysMs.length) break;
+      const delay = delaysMs[attempt];
+      console.warn(
+        `[storage] ${label} failed (attempt ${attempt + 1}/${delaysMs.length + 1}); retrying in ${delay}ms. This is expected on a cold Neon compute. Cause: ` + (err instanceof Error ? err.message : String(err))
+      );
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+  throw lastErr;
+}
 var db = (0, import_postgres_js.drizzle)(client);
 var BOOTSTRAP_DDL = `
 CREATE TABLE IF NOT EXISTS rooms (
@@ -1492,6 +1514,7 @@ async function count(table) {
   return Number(row.c);
 }
 async function bootstrap() {
+  await withRetry(() => client`SELECT 1`, "initial database connection");
   await client.unsafe(BOOTSTRAP_DDL);
   if (await count("users") === 0) {
     await db.insert(users).values({
