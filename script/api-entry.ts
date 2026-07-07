@@ -2,6 +2,13 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Express } from "express";
 import { createApp } from "../server/app";
 
+// Source for the Vercel serverless function. This file is NOT deployed
+// directly — script/build-api.ts bundles it (resolving the @shared/* alias)
+// into api/index.js, which is what Vercel's function builder picks up. See
+// script/build-api.ts for why: Vercel's zero-config Node builder does not
+// resolve TS path aliases, so importing this file's dependency tree as raw
+// .ts crashes at import time with "Cannot find package '@shared/...'".
+
 /**
  * Vercel serverless entry point for the Express API.
  *

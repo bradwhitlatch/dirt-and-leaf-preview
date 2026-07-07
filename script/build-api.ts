@@ -34,7 +34,7 @@ async function buildApi() {
   const external = allDeps;
 
   await esbuild({
-    entryPoints: ["api/index.ts"],
+    entryPoints: ["script/api-entry.ts"],
     platform: "node",
     bundle: true,
     format: "cjs",
