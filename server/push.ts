@@ -30,13 +30,28 @@ if (!process.env.VAPID_PUBLIC_KEY || !process.env.VAPID_PRIVATE_KEY) {
   );
 }
 
-webpush.setVapidDetails(
-  process.env.VAPID_CONTACT_EMAIL ? `mailto:${process.env.VAPID_CONTACT_EMAIL}` : "mailto:admin@example.com",
-  publicKey,
-  privateKey
-);
+// Push is a non-critical feature: a malformed VAPID key (e.g. a placeholder or
+// truncated value in the production env) makes web-push's setVapidDetails throw
+// synchronously. Because this runs at module load, an uncaught throw here would
+// crash the entire serverless function and take down every /api route, not just
+// push. Guard it so bad keys only disable push instead of the whole API.
+let pushConfigured = false;
+try {
+  webpush.setVapidDetails(
+    process.env.VAPID_CONTACT_EMAIL ? `mailto:${process.env.VAPID_CONTACT_EMAIL}` : "mailto:admin@example.com",
+    publicKey,
+    privateKey
+  );
+  pushConfigured = true;
+} catch (err: any) {
+  console.error(
+    "[push] Invalid VAPID configuration — push notifications are disabled. " +
+      "Check VAPID_PUBLIC_KEY (65 bytes base64url), VAPID_PRIVATE_KEY (32 bytes base64url) " +
+      `and VAPID_CONTACT_EMAIL. Details: ${err?.message ?? err}`
+  );
+}
 
-export const vapidPublicKey = publicKey;
+export const vapidPublicKey = pushConfigured ? publicKey : "";
 
 export interface PushPayload {
   title: string;
@@ -48,6 +63,9 @@ export async function sendPushNotification(
   subscriptionJson: string,
   payload: PushPayload
 ): Promise<{ ok: boolean; error?: string }> {
+  if (!pushConfigured) {
+    return { ok: false, error: "Push notifications are not configured (invalid or missing VAPID keys)." };
+  }
   try {
     const subscription = JSON.parse(subscriptionJson);
     await webpush.sendNotification(subscription, JSON.stringify(payload));

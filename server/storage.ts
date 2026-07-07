@@ -236,6 +236,16 @@ async function bootstrap() {
 // so no request is served before the schema + seed data exist.
 export const dbReady: Promise<void> = bootstrap();
 
+// Attach a no-op rejection handler so that if bootstrap() fails before the
+// first request awaits `dbReady`, Node does not treat it as an *unhandled*
+// rejection. On Vercel's serverless runtime an unhandled rejection during
+// function initialization crashes the whole instance (FUNCTION_INVOCATION_FAILED
+// on every route). registerRoutes still `await`s dbReady, so a genuine failure
+// is surfaced per-request by the Express error handler instead of killing init.
+dbReady.catch((err) => {
+  console.error("[storage] Database bootstrap failed:", err);
+});
+
 // ---------------------------------------------------------------------------
 // Storage interface
 // ---------------------------------------------------------------------------
