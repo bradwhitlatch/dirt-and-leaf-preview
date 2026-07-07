@@ -1,6 +1,7 @@
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { useLocation } from "wouter";
 
 export type TaskSheetData = {
   title: string;
@@ -28,7 +29,19 @@ export function TaskSheet({
   onOpenChange: (open: boolean) => void;
   data: TaskSheetData | null;
 }) {
+  const [, navigate] = useLocation();
   if (!data) return null;
+
+  const isInternal = data.cta ? data.cta.url.startsWith("/#/") || data.cta.url.startsWith("/") : false;
+
+  function handleCtaClick(e: React.MouseEvent) {
+    if (isInternal && data?.cta) {
+      e.preventDefault();
+      onOpenChange(false);
+      const path = data.cta.url.replace(/^\/#/, "");
+      navigate(path || "/");
+    }
+  }
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -82,7 +95,12 @@ export function TaskSheet({
 
         {data.cta && (
           <Button asChild className="rounded-full" data-testid="link-sheet-cta">
-            <a href={data.cta.url} target="_blank" rel="noopener noreferrer">
+            <a
+              href={data.cta.url}
+              onClick={handleCtaClick}
+              target={isInternal ? undefined : "_blank"}
+              rel={isInternal ? undefined : "noopener noreferrer"}
+            >
               {data.cta.text}
             </a>
           </Button>

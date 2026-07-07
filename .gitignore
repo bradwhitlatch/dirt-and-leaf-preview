@@ -14,3 +14,6 @@ data.db-journal
 
 *.log
 .DS_Store
+
+# Local Playwright QA screenshots — not part of the app
+qa_*.png
