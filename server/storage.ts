@@ -29,8 +29,46 @@ if (!connectionString) {
 // `max: 1` keeps the pool tiny, which is what serverless (Vercel) wants: each
 // warm function instance holds at most one connection. `prepare: false` is
 // required for transaction-pooler connection strings (PgBouncer / Neon pooled
-// endpoint) that don't support prepared statements.
-const client = postgres(connectionString, { max: 1, prepare: false });
+// endpoint) that don't support prepared statements. `connect_timeout` is raised
+// to 15s (Neon's recommendation) because the free-tier compute suspends after
+// ~5 min idle and the first connection after a cold period must wait for it to
+// wake — the postgres-js default is too aggressive and surfaces as a
+// `write CONNECT_TIMEOUT` error on the very first request. See `withRetry`
+// below, which also retries the initial connection with backoff.
+const client = postgres(connectionString, {
+  max: 1,
+  prepare: false,
+  connect_timeout: 15,
+});
+
+// Retry an operation with short exponential backoff. Used for the initial
+// database connection: Neon's free-tier compute auto-suspends after ~5 minutes
+// of no queries, so the first query after an idle period can transiently fail
+// with a connection timeout while the compute wakes (typically a few hundred ms
+// to a couple of seconds). Retrying transparently turns that into a success
+// instead of a 500 to the client. The total worst-case wait (0.5 + 1 + 2 = 3.5s
+// of backoff, plus up to 15s per connect attempt) stays well inside the Vercel
+// function budget (maxDuration: 30s in vercel.json).
+async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
+  const delaysMs = [500, 1000, 2000];
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= delaysMs.length; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (attempt === delaysMs.length) break;
+      const delay = delaysMs[attempt];
+      console.warn(
+        `[storage] ${label} failed (attempt ${attempt + 1}/${delaysMs.length + 1}); ` +
+          `retrying in ${delay}ms. This is expected on a cold Neon compute. Cause: ` +
+          (err instanceof Error ? err.message : String(err))
+      );
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+  throw lastErr;
+}
 
 export const db = drizzle(client);
 
@@ -155,6 +193,13 @@ async function count(table: string): Promise<number> {
 // idempotent (guarded by a row count) so this is safe to call on every boot,
 // including serverless cold starts.
 async function bootstrap() {
+  // Warm the connection first, with retries, so a cold Neon compute wakes up
+  // before we run any real work. Everything after this runs on an awake compute.
+  // Without this, the first query below fails with `write CONNECT_TIMEOUT` on a
+  // cold start and bubbles up as a 500 (`server_initialization_failed`) to the
+  // client — a retry a few seconds later would have succeeded.
+  await withRetry(() => client`SELECT 1`, "initial database connection");
+
   await client.unsafe(BOOTSTRAP_DDL);
 
   if ((await count("users")) === 0) {
