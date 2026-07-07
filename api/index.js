@@ -23,18 +23,8 @@ __export(api_entry_exports, {
   default: () => handler
 });
 module.exports = __toCommonJS(api_entry_exports);
-async function handler(req, res) {
-  const results = {};
-  const mods = ["express", "postgres", "web-push", "drizzle-orm/postgres-js"];
-  for (const m of mods) {
-    try {
-      await import(m);
-      results[m] = "OK";
-    } catch (e) {
-      results[m] = `FAIL: ${e?.message || e}`;
-    }
-  }
+function handler(req, res) {
   res.statusCode = 200;
   res.setHeader("content-type", "application/json");
-  res.end(JSON.stringify(results));
+  res.end(JSON.stringify({ ok: true, env: !!process.env.DATABASE_URL }));
 }
