@@ -18,3 +18,4 @@ data.db-journal
 # Local Playwright QA screenshots — not part of the app
 qa_*.png
 .vercel
+api/index.js
