@@ -14,13 +14,21 @@ export default {
         // Flat / base colors (regular buttons)
         background: "hsl(var(--background) / <alpha-value>)",
         foreground: "hsl(var(--foreground) / <alpha-value>)",
-        border: "hsl(var(--border) / <alpha-value>)",
-        input: "hsl(var(--input) / <alpha-value>)",
+        border: "hsl(var(--border) / 0.10)",
+        input: "hsl(var(--input) / 0.14)",
         card: {
           DEFAULT: "hsl(var(--card) / <alpha-value>)",
           foreground: "hsl(var(--card-foreground) / <alpha-value>)",
-          border: "hsl(var(--card-border) / <alpha-value>)",
+          border: "hsl(var(--card-border) / 0.10)",
         },
+        surface: {
+          DEFAULT: "hsl(var(--card) / <alpha-value>)",
+          2: "hsl(var(--sidebar) / <alpha-value>)",
+        },
+        water: { DEFAULT: "hsl(var(--water-bg) / <alpha-value>)", foreground: "hsl(var(--water-fg) / <alpha-value>)" },
+        feed: { DEFAULT: "hsl(var(--feed-bg) / <alpha-value>)", foreground: "hsl(var(--feed-fg) / <alpha-value>)" },
+        light: { DEFAULT: "hsl(var(--light-bg) / <alpha-value>)", foreground: "hsl(var(--light-fg) / <alpha-value>)" },
+        chip: "hsl(var(--chip) / <alpha-value>)",
         popover: {
           DEFAULT: "hsl(var(--popover) / <alpha-value>)",
           foreground: "hsl(var(--popover-foreground) / <alpha-value>)",
@@ -29,6 +37,8 @@ export default {
         primary: {
           DEFAULT: "hsl(var(--primary) / <alpha-value>)",
           foreground: "hsl(var(--primary-foreground) / <alpha-value>)",
+          hover: "hsl(var(--primary-hover) / <alpha-value>)",
+          soft: "hsl(var(--primary-soft) / <alpha-value>)",
           border: "var(--primary-border)",
         },
         secondary: {
@@ -85,6 +95,7 @@ export default {
       fontFamily: {
         sans: ["var(--font-sans)"],
         serif: ["var(--font-serif)"],
+        display: ["var(--font-display)"],
         mono: ["var(--font-mono)"],
       },
       keyframes: {

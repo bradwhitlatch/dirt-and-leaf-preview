@@ -1,0 +1,12 @@
+{
+  "name": "Dirt & Leaf",
+  "short_name": "Dirt & Leaf",
+  "description": "Houseplant care, simplified. Snap a photo, get watering, feeding, and placement reminders.",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#141210",
+  "theme_color": "#141210",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}
