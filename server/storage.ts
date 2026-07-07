@@ -194,6 +194,30 @@ function seedIfEmpty() {
 }
 seedIfEmpty();
 
+// Seed a couple of default rooms ("Spaces") on first run only, matching the
+// approved UI reference (Living room / Office) so Home has somewhere to
+// assign a freshly-scanned plant to on day one. Users are not asked to set
+// up rooms manually per the "one photo, that's it" simplicity requirement.
+function seedRoomsIfEmpty() {
+  const count = sqlite.prepare("SELECT COUNT(*) as c FROM rooms").get() as { c: number };
+  if (count.c === 0) {
+    const insert = sqlite.prepare(`INSERT INTO rooms (name, photo_url, created_at) VALUES (?,?,?)`);
+    const now = Date.now();
+    insert.run(
+      "Living room",
+      "https://pplx-res.cloudinary.com/image/upload/pplx_search_images/2f7d59b0b46396ab6a280ae4cc1ba831b83cb102.jpg",
+      now
+    );
+    insert.run(
+      "Office",
+      "https://pplx-res.cloudinary.com/image/upload/pplx_search_images/0b3fa622feb42c41ca3fbb785fe0014d25ce6980.jpg",
+      now
+    );
+    console.log("[storage] Seeded 2 default rooms (Living room, Office).");
+  }
+}
+seedRoomsIfEmpty();
+
 // ---------------------------------------------------------------------------
 // Storage interface
 // ---------------------------------------------------------------------------

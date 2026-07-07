@@ -20,6 +20,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(list);
   });
 
+  app.get("/api/rooms/:id", async (req, res) => {
+    const room = await storage.getRoom(Number(req.params.id));
+    if (!room) return res.status(404).json({ error: "Not found" });
+    res.json(room);
+  });
+
   app.post("/api/rooms", async (req, res) => {
     const parsed = insertRoomSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
