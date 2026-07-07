@@ -38,7 +38,7 @@ async function buildApi() {
     platform: "node",
     bundle: true,
     format: "cjs",
-    outfile: "api/index.js",
+    outfile: "api/index.cjs",
     define: {
       "process.env.NODE_ENV": '"production"',
     },
