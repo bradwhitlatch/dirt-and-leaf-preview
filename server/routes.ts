@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { createServer } from "node:http";
 import type { Server } from "node:http";
-import { storage } from "./storage";
+import { storage, dbReady } from "./storage";
 import { identifyPlant } from "./plant-id";
 import { computeSchedule } from "./care-scheduling";
 import { getWeatherSnapshot, reverseGeocode, approximateHardinessZone } from "./weather";
@@ -12,6 +12,9 @@ import { insertRoomSchema, insertPlantSchema, insertProgressPhotoSchema, insertP
 import { PREMIUM_MONTHLY_PRICE_USD, PREMIUM_YEARLY_PRICE_USD, FREE_PLANT_LIMIT } from "@shared/pricing";
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
+  // Ensure the Postgres schema + seed data exist before serving any request.
+  await dbReady;
+
   // -------------------------------------------------------------------------
   // Rooms ("Spaces")
   // -------------------------------------------------------------------------

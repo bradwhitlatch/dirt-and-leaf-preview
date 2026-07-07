@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real } from "drizzle-orm/sqlite-core";
+import { pgTable, serial, text, integer, bigint, doublePrecision, boolean } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -8,20 +8,25 @@ import { z } from "zod";
  * See README.md "Where things live" section for a map of which routes/UI
  * consume each table.
  *
- * SQLite (via better-sqlite3 + Drizzle) does not support array or nested
- * object columns, so anywhere the domain model needs a list/object
- * (e.g. Plant.id suggestion lists, step arrays, source citation lists)
- * we store JSON text and parse/stringify it in the storage layer.
+ * Persistence is Postgres (via postgres-js + Drizzle). Anywhere the domain
+ * model needs a list/object (e.g. Plant.id suggestion lists, step arrays,
+ * source citation lists) we store JSON text and parse/stringify it in the
+ * storage layer — kept as `text` (not `jsonb`) so the storage semantics are
+ * byte-for-byte identical to the original build.
+ *
+ * Epoch-millisecond timestamps are stored as `bigint` (not `integer`):
+ * Date.now() is ~1.7e12, which overflows Postgres int4. `mode: "number"`
+ * keeps these as plain JS numbers so route/client code is unchanged.
  */
 
 // ---------------------------------------------------------------------------
 // Rooms ("Spaces" in the UI: Living room, Office, etc.)
 // ---------------------------------------------------------------------------
-export const rooms = sqliteTable("rooms", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const rooms = pgTable("rooms", {
+  id: serial("id").primaryKey(),
   name: text("name").notNull(),
   photoUrl: text("photo_url"),
-  createdAt: integer("created_at").notNull(), // epoch ms
+  createdAt: bigint("created_at", { mode: "number" }).notNull(), // epoch ms
 });
 
 export const insertRoomSchema = createInsertSchema(rooms).omit({ id: true, createdAt: true });
@@ -48,8 +53,8 @@ export type Room = typeof rooms.$inferSelect;
 //   "verified"   -> a dedicated research pass has fact-checked/cited it
 // See README.md "Care data research process" for the follow-up workflow.
 // ---------------------------------------------------------------------------
-export const careProfiles = sqliteTable("care_profiles", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const careProfiles = pgTable("care_profiles", {
+  id: serial("id").primaryKey(),
   speciesKey: text("species_key").notNull().unique(), // slug, e.g. "monstera-deliciosa"
   commonName: text("common_name").notNull(),
   scientificName: text("scientific_name").notNull(),
@@ -86,25 +91,25 @@ export type CareProfile = typeof careProfiles.$inferSelect;
 // ---------------------------------------------------------------------------
 // Plants — one row per plant the user has actually saved (starts empty).
 // ---------------------------------------------------------------------------
-export const plants = sqliteTable("plants", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const plants = pgTable("plants", {
+  id: serial("id").primaryKey(),
   roomId: integer("room_id").notNull(),
   careProfileId: integer("care_profile_id"), // nullable: matched species may not be in reference table yet
   commonName: text("common_name").notNull(),
   scientificName: text("scientific_name"),
   curatedPhotoUrl: text("curated_photo_url"), // stock/reference image for the matched species
   userPhotoUrl: text("user_photo_url"), // the original ID photo (never shown as the "main" photo per spec)
-  confirmedConfidence: real("confirmed_confidence"), // 0-1, from the Plant.id suggestion the user tapped
+  confirmedConfidence: doublePrecision("confirmed_confidence"), // 0-1, from the Plant.id suggestion the user tapped
   matchCandidates: text("match_candidates"), // JSON: full top-3..5 suggestion list at save time (audit trail)
-  saveDate: integer("save_date").notNull(),
+  saveDate: bigint("save_date", { mode: "number" }).notNull(),
   // Location snapshot at save time, used to compute the initial schedule
-  locationLat: real("location_lat"),
-  locationLon: real("location_lon"),
+  locationLat: doublePrecision("location_lat"),
+  locationLon: doublePrecision("location_lon"),
   locationLabel: text("location_label"), // reverse-geocoded city/region
   hardinessZone: text("hardiness_zone"),
   potSizeInches: integer("pot_size_inches"),
-  nextWaterDate: integer("next_water_date"),
-  nextFeedDate: integer("next_feed_date"),
+  nextWaterDate: bigint("next_water_date", { mode: "number" }),
+  nextFeedDate: bigint("next_feed_date", { mode: "number" }),
 });
 
 export const insertPlantSchema = createInsertSchema(plants).omit({ id: true, saveDate: true });
@@ -114,13 +119,13 @@ export type Plant = typeof plants.$inferSelect;
 // ---------------------------------------------------------------------------
 // Reminders — computed queue of upcoming/overdue water/feed/light/repot tasks
 // ---------------------------------------------------------------------------
-export const reminders = sqliteTable("reminders", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const reminders = pgTable("reminders", {
+  id: serial("id").primaryKey(),
   plantId: integer("plant_id").notNull(),
   type: text("type").notNull(), // "water" | "feed" | "light" | "repot"
-  dueDate: integer("due_date").notNull(),
+  dueDate: bigint("due_date", { mode: "number" }).notNull(),
   status: text("status").notNull().default("pending"), // "pending" | "done" | "snoozed"
-  createdAt: integer("created_at").notNull(),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });
 
 export const insertReminderSchema = createInsertSchema(reminders).omit({ id: true, createdAt: true });
@@ -131,11 +136,11 @@ export type Reminder = typeof reminders.$inferSelect;
 // Progress photos — growth-tracking photos, compared against the FIRST saved
 // analysis photo. Never overwrites plants.curatedPhotoUrl or the original ID photo.
 // ---------------------------------------------------------------------------
-export const progressPhotos = sqliteTable("progress_photos", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const progressPhotos = pgTable("progress_photos", {
+  id: serial("id").primaryKey(),
   plantId: integer("plant_id").notNull(),
   photoUrl: text("photo_url").notNull(),
-  capturedDate: integer("captured_date").notNull(),
+  capturedDate: bigint("captured_date", { mode: "number" }).notNull(),
   note: text("note"),
 });
 
@@ -146,13 +151,13 @@ export type ProgressPhoto = typeof progressPhotos.$inferSelect;
 // ---------------------------------------------------------------------------
 // Notification log — records of push notifications actually sent/attempted
 // ---------------------------------------------------------------------------
-export const notificationLog = sqliteTable("notification_log", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const notificationLog = pgTable("notification_log", {
+  id: serial("id").primaryKey(),
   reminderId: integer("reminder_id"),
   plantId: integer("plant_id"),
   title: text("title").notNull(),
   body: text("body").notNull(),
-  sentAt: integer("sent_at").notNull(),
+  sentAt: bigint("sent_at", { mode: "number" }).notNull(),
   status: text("status").notNull(), // "sent" | "failed" | "no_subscription"
 });
 
@@ -163,8 +168,8 @@ export type NotificationLogEntry = typeof notificationLog.$inferSelect;
 // ---------------------------------------------------------------------------
 // Affiliate links — product category -> Amazon Associates link builder input
 // ---------------------------------------------------------------------------
-export const affiliateLinks = sqliteTable("affiliate_links", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const affiliateLinks = pgTable("affiliate_links", {
+  id: serial("id").primaryKey(),
   category: text("category").notNull().unique(), // "fertilizer" | "soil" | "pot" | "watering_tools" | "repot_kit"
   label: text("label").notNull(),
   searchQuery: text("search_query").notNull(), // used to build an Amazon search URL
@@ -178,11 +183,11 @@ export type AffiliateLink = typeof affiliateLinks.$inferSelect;
 // ---------------------------------------------------------------------------
 // Push subscriptions — Web Push (Notification/Push API) subscription objects
 // ---------------------------------------------------------------------------
-export const pushSubscriptions = sqliteTable("push_subscriptions", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const pushSubscriptions = pgTable("push_subscriptions", {
+  id: serial("id").primaryKey(),
   endpoint: text("endpoint").notNull().unique(),
   subscriptionJson: text("subscription_json").notNull(), // full PushSubscription JSON
-  createdAt: integer("created_at").notNull(),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });
 
 export const insertPushSubscriptionSchema = createInsertSchema(pushSubscriptions).omit({ id: true, createdAt: true });
@@ -207,12 +212,12 @@ export type SubscriptionTier = (typeof SUBSCRIPTION_TIERS)[number];
 // file) specifically so a future multi-user/auth pass is additive, not a
 // rewrite: add an auth id + foreign keys from rooms/plants to userId.
 // ---------------------------------------------------------------------------
-export const users = sqliteTable("users", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const users = pgTable("users", {
+  id: serial("id").primaryKey(),
   subscriptionTier: text("subscription_tier").notNull().default("free"), // SubscriptionTier
-  subscriptionExpiresAt: integer("subscription_expires_at"), // epoch ms, null for free tier
-  subscriptionRenews: integer("subscription_renews", { mode: "boolean" }).notNull().default(true),
-  createdAt: integer("created_at").notNull(),
+  subscriptionExpiresAt: bigint("subscription_expires_at", { mode: "number" }), // epoch ms, null for free tier
+  subscriptionRenews: boolean("subscription_renews").notNull().default(true),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });
 
 export const insertUserSchema = createInsertSchema(users).omit({ id: true, createdAt: true });

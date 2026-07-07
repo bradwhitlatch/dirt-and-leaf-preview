@@ -13,32 +13,44 @@ import type {
   User, SubscriptionTier,
 } from "@shared/schema";
 import { FREE_PLANT_LIMIT } from "@shared/pricing";
-import { drizzle } from "drizzle-orm/better-sqlite3";
-import Database from "better-sqlite3";
-import { eq, asc } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/postgres-js";
+import postgres from "postgres";
+import { eq, asc, sql } from "drizzle-orm";
 import { careProfileSeeds } from "./care-profile-seed";
 import { affiliateLinkSeeds } from "./affiliate-seed";
 
-const sqlite = new Database("data.db");
-sqlite.pragma("journal_mode = WAL");
+const connectionString = process.env.DATABASE_URL;
+if (!connectionString) {
+  throw new Error(
+    "DATABASE_URL is not set. Dirt & Leaf now uses Postgres — copy .env.example to .env and set DATABASE_URL."
+  );
+}
 
-export const db = drizzle(sqlite);
+// `max: 1` keeps the pool tiny, which is what serverless (Vercel) wants: each
+// warm function instance holds at most one connection. `prepare: false` is
+// required for transaction-pooler connection strings (PgBouncer / Neon pooled
+// endpoint) that don't support prepared statements.
+const client = postgres(connectionString, { max: 1, prepare: false });
+
+export const db = drizzle(client);
 
 // ---------------------------------------------------------------------------
 // Schema bootstrap — the fullstack template doesn't run drizzle-kit migrate
 // automatically, so we create tables directly if they don't exist yet. This
-// keeps `npm run dev` / `npm run build` self-contained with zero extra steps.
+// keeps `npm run dev` self-contained with zero extra steps. In production the
+// schema is created ahead of time via `npm run db:push`; these statements are
+// idempotent (CREATE TABLE IF NOT EXISTS) so running them again is harmless.
 // ---------------------------------------------------------------------------
-sqlite.exec(`
+const BOOTSTRAP_DDL = `
 CREATE TABLE IF NOT EXISTS rooms (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   name TEXT NOT NULL,
   photo_url TEXT,
-  created_at INTEGER NOT NULL
+  created_at BIGINT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS care_profiles (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   species_key TEXT NOT NULL UNIQUE,
   common_name TEXT NOT NULL,
   scientific_name TEXT NOT NULL,
@@ -63,54 +75,54 @@ CREATE TABLE IF NOT EXISTS care_profiles (
 );
 
 CREATE TABLE IF NOT EXISTS plants (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   room_id INTEGER NOT NULL,
   care_profile_id INTEGER,
   common_name TEXT NOT NULL,
   scientific_name TEXT,
   curated_photo_url TEXT,
   user_photo_url TEXT,
-  confirmed_confidence REAL,
+  confirmed_confidence DOUBLE PRECISION,
   match_candidates TEXT,
-  save_date INTEGER NOT NULL,
-  location_lat REAL,
-  location_lon REAL,
+  save_date BIGINT NOT NULL,
+  location_lat DOUBLE PRECISION,
+  location_lon DOUBLE PRECISION,
   location_label TEXT,
   hardiness_zone TEXT,
   pot_size_inches INTEGER,
-  next_water_date INTEGER,
-  next_feed_date INTEGER
+  next_water_date BIGINT,
+  next_feed_date BIGINT
 );
 
 CREATE TABLE IF NOT EXISTS reminders (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   plant_id INTEGER NOT NULL,
   type TEXT NOT NULL,
-  due_date INTEGER NOT NULL,
+  due_date BIGINT NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending',
-  created_at INTEGER NOT NULL
+  created_at BIGINT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS progress_photos (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   plant_id INTEGER NOT NULL,
   photo_url TEXT NOT NULL,
-  captured_date INTEGER NOT NULL,
+  captured_date BIGINT NOT NULL,
   note TEXT
 );
 
 CREATE TABLE IF NOT EXISTS notification_log (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   reminder_id INTEGER,
   plant_id INTEGER,
   title TEXT NOT NULL,
   body TEXT NOT NULL,
-  sent_at INTEGER NOT NULL,
+  sent_at BIGINT NOT NULL,
   status TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS affiliate_links (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   category TEXT NOT NULL UNIQUE,
   label TEXT NOT NULL,
   search_query TEXT NOT NULL,
@@ -118,105 +130,111 @@ CREATE TABLE IF NOT EXISTS affiliate_links (
 );
 
 CREATE TABLE IF NOT EXISTS push_subscriptions (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   endpoint TEXT NOT NULL UNIQUE,
   subscription_json TEXT NOT NULL,
-  created_at INTEGER NOT NULL
+  created_at BIGINT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS users (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   subscription_tier TEXT NOT NULL DEFAULT 'free',
-  subscription_expires_at INTEGER,
-  subscription_renews INTEGER NOT NULL DEFAULT 1,
-  created_at INTEGER NOT NULL
+  subscription_expires_at BIGINT,
+  subscription_renews BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at BIGINT NOT NULL
 );
-`);
+`;
 
-// Seed exactly one user row (single-user local app) on first run.
-function seedUserIfEmpty() {
-  const count = sqlite.prepare("SELECT COUNT(*) as c FROM users").get() as { c: number };
-  if (count.c === 0) {
-    sqlite
-      .prepare(
-        "INSERT INTO users (subscription_tier, subscription_expires_at, subscription_renews, created_at) VALUES (?,?,?,?)"
-      )
-      .run("free", null, 1, Date.now());
+async function count(table: string): Promise<number> {
+  const [row] = await client.unsafe<{ c: string }[]>(`SELECT COUNT(*)::int AS c FROM ${table}`);
+  return Number(row.c);
+}
+
+// Seed exactly one user row (single-user local app), care_profiles,
+// affiliate_links, and the two default rooms on first run only. Every step is
+// idempotent (guarded by a row count) so this is safe to call on every boot,
+// including serverless cold starts.
+async function bootstrap() {
+  await client.unsafe(BOOTSTRAP_DDL);
+
+  if ((await count("users")) === 0) {
+    await db.insert(users).values({
+      subscriptionTier: "free",
+      subscriptionExpiresAt: null,
+      subscriptionRenews: true,
+      createdAt: Date.now(),
+    });
     console.log("[storage] Seeded default free-tier user row.");
   }
-}
-seedUserIfEmpty();
 
-// ---------------------------------------------------------------------------
-// Seed care_profiles + affiliate_links on first run only (idempotent).
-// ---------------------------------------------------------------------------
-function seedIfEmpty() {
-  const careCount = sqlite.prepare("SELECT COUNT(*) as c FROM care_profiles").get() as { c: number };
-  if (careCount.c === 0) {
-    const insert = sqlite.prepare(`
-      INSERT INTO care_profiles (
-        species_key, common_name, scientific_name,
-        water_interval_days_min, water_interval_days_max, water_notes,
-        feed_interval_days_active, feed_interval_days_dormant, feed_notes,
-        light_requirement, placement_notes, soil_type, repot_interval_months,
-        ideal_temp_min_f, ideal_temp_max_f, ideal_humidity_pct, toxicity, mature_size_notes,
-        source_citations, research_status, research_notes
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    `);
-    const insertMany = sqlite.transaction((seeds: typeof careProfileSeeds) => {
-      for (const s of seeds) {
-        insert.run(
-          s.speciesKey, s.commonName, s.scientificName,
-          s.waterIntervalDaysMin, s.waterIntervalDaysMax, s.waterNotes,
-          s.feedIntervalDaysActive, s.feedIntervalDaysDormant ?? null, s.feedNotes,
-          s.lightRequirement, s.placementNotes, s.soilType, s.repotIntervalMonths ?? null,
-          s.idealTempMinF ?? null, s.idealTempMaxF ?? null, s.idealHumidityPct ?? null,
-          s.toxicity ?? null, s.matureSizeNotes ?? null,
-          JSON.stringify(s.sourceCitations), "seed", null
-        );
-      }
-    });
-    insertMany(careProfileSeeds);
+  if ((await count("care_profiles")) === 0) {
+    await db.insert(careProfiles).values(
+      careProfileSeeds.map((s) => ({
+        speciesKey: s.speciesKey,
+        commonName: s.commonName,
+        scientificName: s.scientificName,
+        waterIntervalDaysMin: s.waterIntervalDaysMin,
+        waterIntervalDaysMax: s.waterIntervalDaysMax,
+        waterNotes: s.waterNotes,
+        feedIntervalDaysActive: s.feedIntervalDaysActive,
+        feedIntervalDaysDormant: s.feedIntervalDaysDormant ?? null,
+        feedNotes: s.feedNotes,
+        lightRequirement: s.lightRequirement,
+        placementNotes: s.placementNotes,
+        soilType: s.soilType,
+        repotIntervalMonths: s.repotIntervalMonths ?? null,
+        idealTempMinF: s.idealTempMinF ?? null,
+        idealTempMaxF: s.idealTempMaxF ?? null,
+        idealHumidityPct: s.idealHumidityPct ?? null,
+        toxicity: s.toxicity ?? null,
+        matureSizeNotes: s.matureSizeNotes ?? null,
+        sourceCitations: JSON.stringify(s.sourceCitations),
+        researchStatus: "seed",
+        researchNotes: null,
+      }))
+    );
     console.log(`[storage] Seeded ${careProfileSeeds.length} care_profiles rows.`);
   }
 
-  const affCount = sqlite.prepare("SELECT COUNT(*) as c FROM affiliate_links").get() as { c: number };
-  if (affCount.c === 0) {
-    const insert = sqlite.prepare(
-      `INSERT INTO affiliate_links (category, label, search_query, asin) VALUES (?,?,?,?)`
+  if ((await count("affiliate_links")) === 0) {
+    await db.insert(affiliateLinks).values(
+      affiliateLinkSeeds.map((s) => ({
+        category: s.category,
+        label: s.label,
+        searchQuery: s.searchQuery,
+        asin: s.asin ?? null,
+      }))
     );
-    const insertMany = sqlite.transaction((seeds: typeof affiliateLinkSeeds) => {
-      for (const s of seeds) insert.run(s.category, s.label, s.searchQuery, s.asin ?? null);
-    });
-    insertMany(affiliateLinkSeeds);
     console.log(`[storage] Seeded ${affiliateLinkSeeds.length} affiliate_links rows.`);
   }
-}
-seedIfEmpty();
 
-// Seed a couple of default rooms ("Spaces") on first run only, matching the
-// approved UI reference (Living room / Office) so Home has somewhere to
-// assign a freshly-scanned plant to on day one. Users are not asked to set
-// up rooms manually per the "one photo, that's it" simplicity requirement.
-function seedRoomsIfEmpty() {
-  const count = sqlite.prepare("SELECT COUNT(*) as c FROM rooms").get() as { c: number };
-  if (count.c === 0) {
-    const insert = sqlite.prepare(`INSERT INTO rooms (name, photo_url, created_at) VALUES (?,?,?)`);
+  // Seed a couple of default rooms ("Spaces") on first run only, matching the
+  // approved UI reference (Living room / Office) so Home has somewhere to
+  // assign a freshly-scanned plant to on day one. Users are not asked to set
+  // up rooms manually per the "one photo, that's it" simplicity requirement.
+  if ((await count("rooms")) === 0) {
     const now = Date.now();
-    insert.run(
-      "Living room",
-      "https://pplx-res.cloudinary.com/image/upload/pplx_search_images/2f7d59b0b46396ab6a280ae4cc1ba831b83cb102.jpg",
-      now
-    );
-    insert.run(
-      "Office",
-      "https://pplx-res.cloudinary.com/image/upload/pplx_search_images/0b3fa622feb42c41ca3fbb785fe0014d25ce6980.jpg",
-      now
-    );
+    await db.insert(rooms).values([
+      {
+        name: "Living room",
+        photoUrl:
+          "https://pplx-res.cloudinary.com/image/upload/pplx_search_images/2f7d59b0b46396ab6a280ae4cc1ba831b83cb102.jpg",
+        createdAt: now,
+      },
+      {
+        name: "Office",
+        photoUrl:
+          "https://pplx-res.cloudinary.com/image/upload/pplx_search_images/0b3fa622feb42c41ca3fbb785fe0014d25ce6980.jpg",
+        createdAt: now,
+      },
+    ]);
     console.log("[storage] Seeded 2 default rooms (Living room, Office).");
   }
 }
-seedRoomsIfEmpty();
+
+// Kicked off at import time; awaited by registerRoutes (see server/routes.ts)
+// so no request is served before the schema + seed data exist.
+export const dbReady: Promise<void> = bootstrap();
 
 // ---------------------------------------------------------------------------
 // Storage interface
@@ -270,23 +288,27 @@ export interface IStorage {
 
 export class DatabaseStorage implements IStorage {
   async listRooms(): Promise<Room[]> {
-    return db.select().from(rooms).orderBy(asc(rooms.id)).all();
+    return db.select().from(rooms).orderBy(asc(rooms.id));
   }
   async getRoom(id: number): Promise<Room | undefined> {
-    return db.select().from(rooms).where(eq(rooms.id, id)).get();
+    const [row] = await db.select().from(rooms).where(eq(rooms.id, id));
+    return row;
   }
   async createRoom(room: InsertRoom): Promise<Room> {
-    return db.insert(rooms).values({ ...room, createdAt: Date.now() }).returning().get();
+    const [row] = await db.insert(rooms).values({ ...room, createdAt: Date.now() }).returning();
+    return row;
   }
 
   async listCareProfiles(): Promise<CareProfile[]> {
-    return db.select().from(careProfiles).all();
+    return db.select().from(careProfiles);
   }
   async getCareProfile(id: number): Promise<CareProfile | undefined> {
-    return db.select().from(careProfiles).where(eq(careProfiles.id, id)).get();
+    const [row] = await db.select().from(careProfiles).where(eq(careProfiles.id, id));
+    return row;
   }
   async getCareProfileBySpeciesKey(speciesKey: string): Promise<CareProfile | undefined> {
-    return db.select().from(careProfiles).where(eq(careProfiles.speciesKey, speciesKey)).get();
+    const [row] = await db.select().from(careProfiles).where(eq(careProfiles.speciesKey, speciesKey));
+    return row;
   }
   async findCareProfileByName(name: string): Promise<CareProfile | undefined> {
     const all = await this.listCareProfiles();
@@ -299,84 +321,95 @@ export class DatabaseStorage implements IStorage {
   }
 
   async listPlants(): Promise<Plant[]> {
-    return db.select().from(plants).orderBy(asc(plants.id)).all();
+    return db.select().from(plants).orderBy(asc(plants.id));
   }
   async listPlantsByRoom(roomId: number): Promise<Plant[]> {
-    return db.select().from(plants).where(eq(plants.roomId, roomId)).all();
+    return db.select().from(plants).where(eq(plants.roomId, roomId));
   }
   async getPlant(id: number): Promise<Plant | undefined> {
-    return db.select().from(plants).where(eq(plants.id, id)).get();
+    const [row] = await db.select().from(plants).where(eq(plants.id, id));
+    return row;
   }
   async createPlant(plant: InsertPlant): Promise<Plant> {
-    return db.insert(plants).values({ ...plant, saveDate: Date.now() }).returning().get();
+    const [row] = await db.insert(plants).values({ ...plant, saveDate: Date.now() }).returning();
+    return row;
   }
   async updatePlantSchedule(id: number, nextWaterDate: number, nextFeedDate: number | null): Promise<void> {
-    db.update(plants).set({ nextWaterDate, nextFeedDate }).where(eq(plants.id, id)).run();
+    await db.update(plants).set({ nextWaterDate, nextFeedDate }).where(eq(plants.id, id));
   }
 
   async listReminders(): Promise<Reminder[]> {
-    return db.select().from(reminders).all();
+    return db.select().from(reminders);
   }
   async listRemindersByPlant(plantId: number): Promise<Reminder[]> {
-    return db.select().from(reminders).where(eq(reminders.plantId, plantId)).all();
+    return db.select().from(reminders).where(eq(reminders.plantId, plantId));
   }
   async createReminder(reminder: InsertReminder): Promise<Reminder> {
-    return db.insert(reminders).values({ ...reminder, createdAt: Date.now() }).returning().get();
+    const [row] = await db.insert(reminders).values({ ...reminder, createdAt: Date.now() }).returning();
+    return row;
   }
   async updateReminderStatus(id: number, status: string): Promise<void> {
-    db.update(reminders).set({ status }).where(eq(reminders.id, id)).run();
+    await db.update(reminders).set({ status }).where(eq(reminders.id, id));
   }
 
   async listProgressPhotos(plantId: number): Promise<ProgressPhoto[]> {
-    return db.select().from(progressPhotos).where(eq(progressPhotos.plantId, plantId)).all();
+    return db.select().from(progressPhotos).where(eq(progressPhotos.plantId, plantId));
   }
   async createProgressPhoto(photo: InsertProgressPhoto): Promise<ProgressPhoto> {
-    return db.insert(progressPhotos).values(photo).returning().get();
+    const [row] = await db.insert(progressPhotos).values(photo).returning();
+    return row;
   }
 
   async createNotificationLog(entry: InsertNotificationLog): Promise<NotificationLogEntry> {
-    return db.insert(notificationLog).values(entry).returning().get();
+    const [row] = await db.insert(notificationLog).values(entry).returning();
+    return row;
   }
   async listNotificationLog(): Promise<NotificationLogEntry[]> {
-    return db.select().from(notificationLog).all();
+    return db.select().from(notificationLog);
   }
 
   async listAffiliateLinks(): Promise<AffiliateLink[]> {
-    return db.select().from(affiliateLinks).all();
+    return db.select().from(affiliateLinks);
   }
   async getAffiliateLinkByCategory(category: string): Promise<AffiliateLink | undefined> {
-    return db.select().from(affiliateLinks).where(eq(affiliateLinks.category, category)).get();
+    const [row] = await db.select().from(affiliateLinks).where(eq(affiliateLinks.category, category));
+    return row;
   }
 
   async listPushSubscriptions(): Promise<PushSubscription[]> {
-    return db.select().from(pushSubscriptions).all();
+    return db.select().from(pushSubscriptions);
   }
   async createPushSubscription(sub: InsertPushSubscription): Promise<PushSubscription> {
-    return db.insert(pushSubscriptions).values({ ...sub, createdAt: Date.now() }).returning().get();
+    const [row] = await db.insert(pushSubscriptions).values({ ...sub, createdAt: Date.now() }).returning();
+    return row;
   }
 
   async getCurrentUser(): Promise<User> {
-    const existing = db.select().from(users).where(eq(users.id, 1)).get();
+    const [existing] = await db.select().from(users).where(eq(users.id, 1));
     if (existing) return existing;
     // Defensive fallback in case the seed row is ever missing.
-    return db.insert(users).values({ subscriptionTier: "free", subscriptionExpiresAt: null, subscriptionRenews: true, createdAt: Date.now() }).returning().get();
+    const [created] = await db
+      .insert(users)
+      .values({ subscriptionTier: "free", subscriptionExpiresAt: null, subscriptionRenews: true, createdAt: Date.now() })
+      .returning();
+    return created;
   }
 
   async setSubscriptionTier(tier: SubscriptionTier, expiresAt: number | null): Promise<User> {
     const current = await this.getCurrentUser();
-    return db
+    const [row] = await db
       .update(users)
       .set({ subscriptionTier: tier, subscriptionExpiresAt: expiresAt, subscriptionRenews: true })
       .where(eq(users.id, current.id))
-      .returning()
-      .get();
+      .returning();
+    return row;
   }
 
   async canTrackAdditionalPlant(): Promise<boolean> {
     const user = await this.getCurrentUser();
     if (user.subscriptionTier !== "free") return true;
-    const count = (await this.listPlants()).length;
-    return count < FREE_PLANT_LIMIT;
+    const [row] = await db.select({ c: sql<number>`count(*)::int` }).from(plants);
+    return Number(row.c) < FREE_PLANT_LIMIT;
   }
 }
 
