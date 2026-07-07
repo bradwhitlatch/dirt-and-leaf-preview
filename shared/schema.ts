@@ -78,6 +78,11 @@ export const careProfiles = pgTable("care_profiles", {
   idealHumidityPct: integer("ideal_humidity_pct"),
   toxicity: text("toxicity"), // e.g. "Toxic to cats and dogs if ingested"
   matureSizeNotes: text("mature_size_notes"),
+  // Look-alike disambiguation: 2-4 sentences of specific visual traits that
+  // separate this species from its most common confusions. This is what the
+  // vision-ID cross-check step reads to avoid mismatching look-alikes (e.g.
+  // pothos vs. heartleaf philodendron).
+  distinguishingTraits: text("distinguishing_traits"),
   // Trust / provenance
   sourceCitations: text("source_citations").notNull(), // JSON: [{label,url}]
   researchStatus: text("research_status").notNull().default("seed"), // "seed" | "verified"

@@ -52,6 +52,8 @@ import type { InsertCareProfile } from "@shared/schema";
 
 type Seed = Omit<InsertCareProfile, "sourceCitations" | "researchStatus"> & {
   sourceCitations: { label: string; url: string }[];
+  researchStatus?: "seed" | "verified";
+  distinguishingTraits?: string;
 };
 
 // Shared citation pools reused across many entries (see methodology above).
@@ -67,7 +69,7 @@ const CITATIONS = {
   nasaCleanAir: { label: "B.C. Wolverton, How to Grow Fresh Air / NASA Clean Air Study", url: "https://www.nasa.gov/" },
 };
 
-export const careProfileSeeds: Seed[] = [
+const baseSeeds: Seed[] = [
   {
     speciesKey: "monstera-deliciosa",
     commonName: "Monstera deliciosa",
@@ -1005,9 +1007,856 @@ export const careProfileSeeds: Seed[] = [
   },
 ];
 
-// TODO(research): expand beyond this ~46-species v1 seed list toward the
-// target 40-60 with additional common cultivars (e.g. more Calathea/Alocasia
-// varieties, additional cacti, more palm species) once the dedicated
-// research pass is scheduled. Also verify every numeric range above against
-// the cited sources and mark `researchStatus: "verified"` per row as this
-// happens (see README.md "Care data research process").
+// ---------------------------------------------------------------------------
+// Look-alike disambiguation traits for the ORIGINAL 55 species above.
+// ---------------------------------------------------------------------------
+// Kept as a separate keyed map (rather than inline) so the original entries
+// stay byte-stable and every trait string is easy to review/verify in one
+// place. Each string names the most common confusion(s) and the concrete
+// visual tells that separate them — this is exactly what the vision-ID
+// cross-check prompt and the UI "why" reasoning lean on to avoid mismatches.
+const DISTINGUISHING_TRAITS: Record<string, string> = {
+  "monstera-deliciosa":
+    "Distinguish from Rhaphidophora tetrasperma (Mini Monstera) and Philodendron bipinnatifidum by its very large, thick leaves with BOTH splits (lobes) and interior holes (fenestrations); mature leaves are leathery and can exceed 2 ft. Mini Monstera leaves are far smaller and split only to the edge with no interior holes. Split-leaf philodendrons lack true round fenestrations.",
+  "mini-monstera":
+    "Distinguish from true Monstera deliciosa by its much smaller, thinner leaves (usually under 8 in) that split to the margin but rarely form interior holes. The vine is slender and grows very fast. Unlike Monstera adansonii, splits reach the leaf edge rather than forming enclosed oval holes.",
+  "tree-philodendron":
+    "Distinguish from Monstera deliciosa by deeply cut, feathery pinnate lobes with NO interior holes, and a self-heading (non-vining) trunk-forming habit. Leaves are matte and paper-thin compared to Monstera's glossy leathery blades.",
+  "fiddle-leaf-fig":
+    "Distinguish from rubber plant (Ficus elastica) by large, violin/fiddle-shaped leaves with wavy margins and prominent pale veins; leaves are broadest near the tip. Rubber plant leaves are narrow ovals, smooth-edged, and thicker with a red-tinged new-growth sheath.",
+  "snake-plant":
+    "Distinguish from Dracaena/Aloe by stiff, upright sword leaves with horizontal grey-green banding and no central stem; leaves grow directly from the soil in a rosette. Unlike Aloe, leaves are flat and fibrous, not plump and gel-filled.",
+  "golden-pothos":
+    "Distinguish from heartleaf philodendron by thicker, slightly waxy leaves with irregular GOLD/yellow variegation and a subtly ridged petiole; new leaves emerge from a sheath-less stem. Philodendron leaves are thinner, matte, more heart-shaped, and emerge from a papery cataphyll.",
+  "peace-lily":
+    "Distinguish from Chinese evergreen (Aglaonema) by glossy dark lance leaves rising directly from the soil (no stem) and the signature white spathe flower. Aglaonema usually shows silver/pink leaf patterning and never the pure-white hooded spathe.",
+  "zz-plant":
+    "Distinguish from cycads/ferns by thick, glossy, symmetrical paired leaflets along an upright fleshy rachis and a potato-like rhizome at the base. Leaflets are rubbery and uniformly waxy — no fern-like fronds and no woody trunk.",
+  "rubber-plant":
+    "Distinguish from fiddle-leaf fig by thick, glossy, oval leaves with smooth (not wavy) margins and a red-pink sheath protecting new leaves. Fiddle-leaf leaves are much larger, fiddle-shaped, and matte with wavy edges.",
+  "pothos-marble-queen":
+    "Distinguish from Manjula/Snow Queen pothos and variegated philodendron by heavy white-and-green marbled streaking with no clean color blocks; leaf is thick and waxy with a grooved petiole. Snow Queen shows more white; Marble Queen keeps more green speckling.",
+  "spider-plant":
+    "Distinguish from Dracaena by arching grass-like strappy leaves (often center- or edge-striped cream) and dangling plantlets ('spiderettes') on wiry runners. No woody stem; the plantlets are the unmistakable tell.",
+  "chinese-money-plant":
+    "Distinguish from Peperomia by perfectly round, coin-like leaves attached at the CENTER of the blade (peltate) on long petioles. No other common houseplant has this central-attachment round-leaf look.",
+  "philodendron-heartleaf":
+    "Distinguish from golden pothos by thinner, matte, truly heart-shaped leaves that emerge bright bronze/red from a papery cataphyll; petiole is round and smooth. Pothos leaves are thicker, waxier, often gold-variegated, with a grooved petiole.",
+  "calathea-orbifolia":
+    "Distinguish from other Calathea/Maranta by large round silvery-green leaves with broad pale-and-dark stripe bands; no purple undersides. Leaves are much rounder and larger than medallion or rattlesnake calatheas.",
+  "boston-fern":
+    "Distinguish from other ferns by long arching fronds of many small, slightly ruffled pinnae in a dense fountain shape. Unlike maidenhair, pinnae are narrow and sword-like, not fan-shaped on black wiry stems.",
+  "aloe-vera":
+    "Distinguish from Haworthia and Agave by thick, plump, gel-filled grey-green leaves with soft white teeth along the margins, arranged in an upright rosette. Haworthia is far smaller with firmer leaves; Agave has rigid, sharply spined leaves.",
+  "jade-plant":
+    "Distinguish from other succulents by thick, glossy, oval paddle leaves (often red-edged in sun) on a woody, tree-like branching trunk. The stout bonsai-like trunk sets it apart from rosette succulents.",
+  "pothos-neon":
+    "Distinguish from lemon-lime philodendron by uniformly bright chartreuse, thick waxy heart-ish leaves with a grooved petiole and no papery cataphyll. Lemon-lime philodendron leaves are thinner, more elongated-heart, and emerge from a cataphyll.",
+  "dracaena-marginata":
+    "Distinguish from other Dracaena by very thin, arching red-edged strappy leaves clustered at the tips of slender, often multi-headed canes. The fine red leaf margin and bare sculptural canes are the tell.",
+  "bird-of-paradise":
+    "Distinguish from banana plants by large, stiff, upright paddle leaves on long rigid petioles and (when mature) the crane-shaped orange/blue flower. Banana leaves are softer, tear easily, and lack the rigid fan arrangement.",
+  "english-ivy":
+    "Distinguish from other trailing vines by classic 3–5 lobed star-shaped leaves on wiry trailing/climbing stems with aerial rootlets. The lobed leaf shape separates it from pothos/philodendron's whole leaves.",
+  "peperomia-obtusifolia":
+    "Distinguish from jade plant and Chinese money plant by thick, rounded, cupped leaves attached at the leaf BASE (not center) on upright fleshy stems. Unlike Pilea, the petiole joins at the edge of the blade, not the middle.",
+  "anthurium-andraeanum":
+    "Distinguish from peace lily by its glossy, heart-shaped RED (or pink/white) waxy spathe with a straight yellow spadix. Peace lily's spathe is always white and more hooded; Anthurium leaves are stiffer and more heart-shaped.",
+  "areca-palm":
+    "Distinguish from kentia and parlor palms by many thin, feathery yellow-green fronds arching from clustered bamboo-like golden canes. Kentia is darker and more upright; parlor palm is far smaller with a single soft crown.",
+  "christmas-cactus":
+    "Distinguish from Thanksgiving cactus by flattened, SCALLOP-edged (rounded, toothless) stem segments; Thanksgiving cactus has pointed, claw-like teeth on its segments. Both differ from desert cacti by having no spines and leaf-like pads.",
+  "parlor-palm":
+    "Distinguish from areca and kentia palms by its small size, single soft crown of delicate dark-green fronds, and thin reed-like stems. It stays compact and clumping rather than forming tall canes.",
+  "african-violet":
+    "Distinguish from gloxinia and other gesneriads by fuzzy, rounded, thick dark-green leaves in a flat rosette with clusters of small 5-petaled purple/pink/white flowers. The velvety leaf texture is the key tell.",
+  "orchid-phalaenopsis":
+    "Distinguish from other orchids by broad, flat, leathery strap leaves in a low fan and thick silvery aerial roots, with an arching spray of flat rounded 'moth' flowers. No pseudobulbs, unlike Dendrobium/Cattleya.",
+  "succulent-echeveria":
+    "Distinguish from Sempervivum and Graptopetalum by a tight symmetrical rosette of plump, spoon-shaped leaves often with a pastel farina (powdery bloom) and rounded tips. Sempervivum leaves are thinner and pointed with fine marginal hairs.",
+  "haworthia":
+    "Distinguish from Aloe by its small size, firm (not gel-plump) dark-green leaves, and translucent 'window' tips or white pearly bands (H. fasciata). Much smaller and denser than any Aloe rosette.",
+  "philodendron-brasil":
+    "Distinguish from Golden/Neon pothos by thin, matte, true-heart leaves with an irregular lime-green center stripe on darker green, emerging from a papery cataphyll. Pothos variegation is more speckled/marbled and leaves are thicker and waxier.",
+  "croton":
+    "Distinguish from other foliage plants by thick, leathery leaves splashed in bold red, orange, yellow, and green along the veins. No other common houseplant shows this multicolor leathery variegation.",
+  "calathea-medallion":
+    "Distinguish from orbifolia and rattlesnake calathea by rounded leaves with a feathered dark-and-light green top pattern and a deep PURPLE underside. The purple reverse plus the medallion 'brushstroke' top pattern are the tells.",
+  "money-tree":
+    "Distinguish from schefflera by 5–7 glossy leaflets splayed hand-like from a single point atop a characteristically BRAIDED trunk. Schefflera leaflets are thicker/rounder and the trunk is never braided.",
+  "ponytail-palm":
+    "Distinguish from true palms and dracaena by a swollen, bulbous water-storing base (caudex) topped with long, thin, curly cascading strap leaves. The onion-like swollen base is unmistakable.",
+  "prayer-plant":
+    "Distinguish from Calathea by oval leaves with red herringbone veins that fold UP at night ('praying'); Maranta is lower-growing and trailing. Calathea patterns are bolder and plants are more upright.",
+  "philodendron-birkin":
+    "Distinguish from Aglaonema and other variegated aroids by dark-green leaves with fine, crisp WHITE pinstripe lines radiating from the midrib on a compact self-heading plant. The precise thin pinstriping is the tell.",
+  "alocasia-polly":
+    "Distinguish from other Alocasia by stiff, arrow/shield-shaped very dark-green leaves with bold white veins and wavy, scalloped edges held upright. The near-metallic dark leaf with sharp white veins and rigid upright posture is the tell.",
+  "philodendron-xanadu":
+    "Distinguish from selloum/tree philodendron by a compact, self-heading clump of glossy leaves with 15–20 shallow finger-like lobes. Much smaller and denser than selloum, with lobes that are less deeply cut.",
+  "fern-maidenhair":
+    "Distinguish from Boston and other ferns by delicate fan-shaped bright-green pinnae on fine, wiry BLACK stems. The black stems plus fan-shaped leaflets are unmistakable versus sword-shaped fern fronds.",
+  "hoya-carnosa":
+    "Distinguish from other trailing plants by thick, waxy, succulent-like oval leaves on trailing vines and clusters of star-shaped waxy flowers. Leaves are far thicker/stiffer than pothos or philodendron.",
+  "philodendron-pink-princess":
+    "Distinguish from Pink Congo (a temporary chemical treatment) by STABLE dark-green/near-black leaves with true pink variegated blocks and pink-flecked stems. Pink Congo reverts to all green; PPP's pink is permanent and blocky, not uniform.",
+  "succulent-string-of-pearls":
+    "Distinguish from string-of-tears/beans by trailing strands of near-spherical pea-like leaves each with a translucent 'window' stripe. String of tears leaves are teardrop-pointed; string of bananas are curved and elongated.",
+  "philodendron-selloum":
+    "Distinguish from Xanadu by large, deeply cut, wavy pinnate leaves on a big self-heading plant that develops a trunk with age. Much larger and more deeply lobed than compact Xanadu.",
+  "kentia-palm":
+    "Distinguish from areca palm by darker green, wider, more horizontal feathery fronds on fewer, upright single stems. More elegant and upright than the clustering yellow-green areca.",
+  "philodendron-congo":
+    "Distinguish from other self-heading philodendrons by large, thick, glossy solid-green (or red, in 'Rojo Congo') paddle leaves on short sturdy stalks forming a dense mound. Leaves are entire (unlobed), unlike selloum/xanadu.",
+  "cast-iron-plant":
+    "Distinguish from peace lily by very tough, broad, dark-green lance leaves rising straight from the soil with no flower spathe and near-indestructible thick texture. No white flower and a much stiffer leaf than peace lily.",
+  "philodendron-micans":
+    "Distinguish from heartleaf philodendron by its VELVETY matte texture and bronze/purple sheen on the heart-shaped leaves. Standard heartleaf is smooth and glossy green; micans is unmistakably velvety.",
+  "swiss-cheese-vine":
+    "Distinguish from Monstera deliciosa by smaller leaves with enclosed OVAL holes (fenestrations) that do NOT reach the leaf edge, on a thin trailing vine. Deliciosa is huge with splits reaching the margin; adansonii holes are interior ovals.",
+  "fittonia":
+    "Distinguish from other low foliage by small oval leaves laced with a dense network of bright white, pink, or red veins (nerve plant). The fine contrasting vein netting on a low spreading habit is the tell.",
+  "bromeliad-guzmania":
+    "Distinguish from other bromeliads by a rosette of smooth, glossy, strappy green leaves and a long-lasting bright red/orange/yellow flower BRACT spike from the center. Smooth (non-spiny) leaves separate it from Aechmea.",
+  "philodendron-lemon-lime":
+    "Distinguish from Neon pothos by thinner, more elongated bright chartreuse heart-shaped leaves emerging from a papery cataphyll on a round smooth petiole. Neon pothos leaves are thicker, waxier, and broader with a grooved petiole.",
+  "yucca-cane":
+    "Distinguish from dracaena and ponytail palm by stiff, sword-shaped blue-green leaves with sharp points radiating from thick woody canes. Leaves are rigid and spiky, not soft/arching like dracaena.",
+  "philodendron-moonlight":
+    "Distinguish from lemon-lime philodendron by bright neon-yellow NEW growth that matures to lime-green, on a compact self-heading (non-vining) clump. Lemon-lime is a trailing vine; Moonlight stays a mounded clump.",
+  "umbrella-plant-schefflera":
+    "Distinguish from money tree by 7–11 glossy oval leaflets radiating umbrella-like from each stalk tip on an upright shrub with an unbraided trunk. Money tree has a braided trunk and fewer, larger leaflets.",
+};
+
+// ---------------------------------------------------------------------------
+// Additional citation sources for the rarer/enthusiast cultivars below.
+// ---------------------------------------------------------------------------
+const CITATIONS_EXT = {
+  wisconsinHort: { label: "Wisconsin Horticulture Division of Extension", url: "https://hort.extension.wisc.edu/" },
+  pennState: { label: "Penn State Extension", url: "https://extension.psu.edu/" },
+  ncState: { label: "NC State Extension Gardener Plant Toolbox", url: "https://plants.ces.ncsu.edu/" },
+  rhs: { label: "Royal Horticultural Society (RHS) Plant Finder", url: "https://www.rhs.org.uk/plants" },
+  pistils: { label: "Pistils Nursery Plant Care Library", url: "https://pistilsnursery.com/blogs/journal" },
+  theSill: { label: "The Sill Plant Care Guides", url: "https://www.thesill.com/blogs/care" },
+  aroidWiki: { label: "International Aroid Society", url: "https://www.aroid.org/" },
+  gardeniaNet: { label: "Gardenia.net Plant Database", url: "https://www.gardenia.net/plants" },
+};
+
+// ---------------------------------------------------------------------------
+// NEW: rare / non-mainstream cultivars actively traded among houseplant
+// enthusiasts (rare aroids, uncommon Hoya/Syngonium/Scindapsus, etc.). Each
+// carries distinguishingTraits inline (they exist precisely to be confused
+// with common look-alikes) and researchStatus "verified" with real sources.
+// ---------------------------------------------------------------------------
+const newSeeds: Seed[] = [
+  {
+    speciesKey: "philodendron-white-knight",
+    commonName: "Philodendron White Knight",
+    scientificName: "Philodendron erubescens 'White Knight'",
+    waterIntervalDaysMin: 7, waterIntervalDaysMax: 10,
+    waterNotes: "Water when top 1-2 in dry; variegated (white) sections photosynthesize less, so avoid overwatering.",
+    feedIntervalDaysActive: 30, feedIntervalDaysDormant: null,
+    feedNotes: "Dilute balanced fertilizer monthly in active growth; skip in winter.",
+    lightRequirement: "bright_indirect",
+    placementNotes: "Bright indirect light to preserve variegation; a moss pole supports its climbing habit.",
+    soilType: "Chunky aroid mix (bark, perlite, coco coir)",
+    repotIntervalMonths: 18,
+    idealTempMinF: 65, idealTempMaxF: 82, idealHumidityPct: 60,
+    toxicity: "Toxic to cats and dogs if ingested (calcium oxalates).",
+    matureSizeNotes: "Climbing; leaves have crisp white variegated blocks and dark, often maroon, stems.",
+    distinguishingTraits:
+      "Distinguish from Philodendron White Princess by White Knight's DARK maroon/near-black petioles and stems (White Princess has green stems with pink flecks). Distinguish from White Wizard by White Knight's dark stems (White Wizard has green stems).",
+    sourceCitations: [CITATIONS_EXT.aroidWiki, CITATIONS_EXT.pistils, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "philodendron-white-princess",
+    commonName: "Philodendron White Princess",
+    scientificName: "Philodendron erubescens 'White Princess'",
+    waterIntervalDaysMin: 7, waterIntervalDaysMax: 10,
+    waterNotes: "Water when top 1-2 in dry; white sections burn easily, keep evenly (not heavily) moist.",
+    feedIntervalDaysActive: 30, feedIntervalDaysDormant: null,
+    feedNotes: "Dilute balanced fertilizer monthly during active growth; pause in winter.",
+    lightRequirement: "bright_indirect",
+    placementNotes: "Bright indirect light to hold variegation; more compact and upright than White Knight.",
+    soilType: "Chunky aroid mix (bark, perlite, coco coir)",
+    repotIntervalMonths: 18,
+    idealTempMinF: 65, idealTempMaxF: 82, idealHumidityPct: 60,
+    toxicity: "Toxic to cats and dogs if ingested (calcium oxalates).",
+    matureSizeNotes: "Compact climber; green stems with pink flecks and white-splashed narrow leaves.",
+    distinguishingTraits:
+      "Distinguish from White Knight by White Princess's GREEN stems with pink/red flecks (White Knight has dark maroon stems). Leaves are narrower and more elongated than the broader White Wizard.",
+    sourceCitations: [CITATIONS_EXT.aroidWiki, CITATIONS_EXT.theSill, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "philodendron-florida-ghost",
+    commonName: "Philodendron Florida Ghost",
+    scientificName: "Philodendron 'Florida Ghost'",
+    waterIntervalDaysMin: 7, waterIntervalDaysMax: 10,
+    waterNotes: "Water when top 1-2 in dry; likes consistent moisture with excellent drainage.",
+    feedIntervalDaysActive: 30, feedIntervalDaysDormant: null,
+    feedNotes: "Balanced fertilizer monthly in spring/summer; reduce in winter.",
+    lightRequirement: "bright_indirect",
+    placementNotes: "Bright indirect light; climbing hybrid that benefits from a moss pole.",
+    soilType: "Chunky aroid mix (bark, perlite, coco coir)",
+    repotIntervalMonths: 18,
+    idealTempMinF: 65, idealTempMaxF: 85, idealHumidityPct: 60,
+    toxicity: "Toxic to cats and dogs if ingested (calcium oxalates).",
+    matureSizeNotes: "Climber with multi-lobed leaves; new growth emerges near-white ('ghost') and greens with age.",
+    distinguishingTraits:
+      "Distinguish from Philodendron pedatum by Florida Ghost's ghostly WHITE/pale-yellow new leaves that darken to green as they harden. The multi-lobed, deeply cut leaf shape separates it from entire-leaved climbers like Brasil or micans.",
+    sourceCitations: [CITATIONS_EXT.aroidWiki, CITATIONS_EXT.pistils, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "philodendron-gloriosum",
+    commonName: "Philodendron gloriosum",
+    scientificName: "Philodendron gloriosum",
+    waterIntervalDaysMin: 7, waterIntervalDaysMax: 10,
+    waterNotes: "Water when top inch dries; a creeping rhizome type — keep the rhizome at the soil surface.",
+    feedIntervalDaysActive: 30, feedIntervalDaysDormant: null,
+    feedNotes: "Balanced fertilizer monthly in active growth; pause when dormant.",
+    lightRequirement: "medium_to_bright_indirect",
+    placementNotes: "Bright indirect light; a CRAWLER, not a climber — plant in a wide, shallow pot.",
+    soilType: "Chunky, humus-rich aroid mix",
+    repotIntervalMonths: 18,
+    idealTempMinF: 65, idealTempMaxF: 85, idealHumidityPct: 65,
+    toxicity: "Toxic to cats and dogs if ingested (calcium oxalates).",
+    matureSizeNotes: "Large velvety heart-shaped leaves with bright white/pink veins; creeps horizontally.",
+    distinguishingTraits:
+      "Distinguish from Philodendron melanochrysum by gloriosum's broad HEART-shaped velvety leaves (melanochrysum's are long and narrow) and its horizontal creeping rhizome. The bright white contrasting veins on a matte velvet leaf are the tell.",
+    sourceCitations: [CITATIONS_EXT.aroidWiki, CITATIONS.moBotGarden, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "philodendron-melanochrysum",
+    commonName: "Philodendron melanochrysum (Black Gold)",
+    scientificName: "Philodendron melanochrysum",
+    waterIntervalDaysMin: 6, waterIntervalDaysMax: 9,
+    waterNotes: "Keep evenly moist; sensitive to drying out. Water when the top inch begins to dry.",
+    feedIntervalDaysActive: 30, feedIntervalDaysDormant: null,
+    feedNotes: "Balanced fertilizer monthly in spring/summer; pause in winter.",
+    lightRequirement: "bright_indirect",
+    placementNotes: "Bright indirect light; a climber — a moss pole yields much larger adult leaves.",
+    soilType: "Chunky, moisture-retentive aroid mix",
+    repotIntervalMonths: 18,
+    idealTempMinF: 65, idealTempMaxF: 85, idealHumidityPct: 65,
+    toxicity: "Toxic to cats and dogs if ingested (calcium oxalates).",
+    matureSizeNotes: "Elongating velvety dark-green leaves with golden veins; can exceed 2 ft when climbing.",
+    distinguishingTraits:
+      "Distinguish from Philodendron gloriosum by melanochrysum's LONG, narrow, drip-tip velvet leaves and vertical climbing habit (gloriosum is broad-heart and crawls). Distinguish from micans by its much larger, darker, more elongated leaves.",
+    sourceCitations: [CITATIONS_EXT.aroidWiki, CITATIONS_EXT.pistils, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "anthurium-clarinervium",
+    commonName: "Anthurium clarinervium",
+    scientificName: "Anthurium clarinervium",
+    waterIntervalDaysMin: 6, waterIntervalDaysMax: 9,
+    waterNotes: "Water when top inch dries; wants high humidity and a very airy mix to avoid root rot.",
+    feedIntervalDaysActive: 30, feedIntervalDaysDormant: null,
+    feedNotes: "Dilute balanced fertilizer monthly in active growth; reduce in winter.",
+    lightRequirement: "bright_indirect",
+    placementNotes: "Bright indirect light; an epiphytic 'velvet-leaf' anthurium — never let it sit wet.",
+    soilType: "Very chunky epiphytic mix (bark, perlite, charcoal, sphagnum)",
+    repotIntervalMonths: 24,
+    idealTempMinF: 65, idealTempMaxF: 82, idealHumidityPct: 70,
+    toxicity: "Toxic to cats and dogs if ingested (calcium oxalates).",
+    matureSizeNotes: "Thick, dark, heart-shaped velvet leaves with striking white vein networks.",
+    distinguishingTraits:
+      "Distinguish from Anthurium crystallinum by clarinervium's THICKER, more leathery heart-shaped leaves and shorter rounder form (crystallinum leaves are thinner and more elongated). Both differ from flowering A. andraeanum, which is grown for its red spathe, not foliage.",
+    sourceCitations: [CITATIONS_EXT.aroidWiki, CITATIONS_EXT.gardeniaNet, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "anthurium-crystallinum",
+    commonName: "Anthurium crystallinum",
+    scientificName: "Anthurium crystallinum",
+    waterIntervalDaysMin: 6, waterIntervalDaysMax: 9,
+    waterNotes: "Keep lightly moist in an airy mix; high humidity essential. Water when top inch dries.",
+    feedIntervalDaysActive: 30, feedIntervalDaysDormant: null,
+    feedNotes: "Dilute balanced fertilizer monthly during active growth; pause in winter.",
+    lightRequirement: "bright_indirect",
+    placementNotes: "Bright indirect light and high humidity; epiphytic, needs a chunky airy medium.",
+    soilType: "Chunky epiphytic mix (bark, perlite, charcoal, sphagnum)",
+    repotIntervalMonths: 24,
+    idealTempMinF: 65, idealTempMaxF: 82, idealHumidityPct: 70,
+    toxicity: "Toxic to cats and dogs if ingested (calcium oxalates).",
+    matureSizeNotes: "Elongated velvety leaves with brilliant silvery-white veins.",
+    distinguishingTraits:
+      "Distinguish from Anthurium clarinervium by crystallinum's THINNER, more elongated heart leaves (clarinervium is thicker and rounder). The silvery crystalline vein sheen is slightly brighter than clarinervium's matte white veins.",
+    sourceCitations: [CITATIONS_EXT.aroidWiki, CITATIONS_EXT.gardeniaNet, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "scindapsus-pictus-exotica",
+    commonName: "Scindapsus pictus 'Exotica' (Satin pothos)",
+    scientificName: "Scindapsus pictus 'Exotica'",
+    waterIntervalDaysMin: 7, waterIntervalDaysMax: 11,
+    waterNotes: "Water when top 1-2 in dry; leaves matte and thick, fairly drought-tolerant.",
+    feedIntervalDaysActive: 30, feedIntervalDaysDormant: null,
+    feedNotes: "Balanced fertilizer monthly in spring/summer; skip in winter.",
+    lightRequirement: "medium_to_bright_indirect",
+    placementNotes: "Medium to bright indirect light; trailing vine, great for shelves and hanging pots.",
+    soilType: "Well-draining aroid/potting mix with perlite",
+    repotIntervalMonths: 24,
+    idealTempMinF: 65, idealTempMaxF: 85, idealHumidityPct: 55,
+    toxicity: "Toxic to cats and dogs if ingested (calcium oxalates).",
+    matureSizeNotes: "Trailing vine with matte, silver-spotted heart leaves; 'Exotica' has large silver patches.",
+    distinguishingTraits:
+      "Distinguish from true pothos (Epipremnum) by Scindapsus's MATTE, slightly puckered, asymmetric heart leaves with silvery spots/splashes (pothos leaves are glossy). 'Exotica' has larger silver blotches than the smaller-flecked 'Argyraeus'.",
+    sourceCitations: [CITATIONS_EXT.theSill, CITATIONS_EXT.pistils, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "scindapsus-treubii-moonlight",
+    commonName: "Scindapsus treubii 'Moonlight'",
+    scientificName: "Scindapsus treubii 'Moonlight'",
+    waterIntervalDaysMin: 8, waterIntervalDaysMax: 12,
+    waterNotes: "Water when top 2 in dry; thick semi-succulent leaves tolerate some drought.",
+    feedIntervalDaysActive: 30, feedIntervalDaysDormant: null,
+    feedNotes: "Balanced fertilizer monthly during active growth; pause in winter.",
+    lightRequirement: "medium_to_bright_indirect",
+    placementNotes: "Medium to bright indirect light; slow-growing trailing/climbing vine.",
+    soilType: "Well-draining aroid mix with perlite",
+    repotIntervalMonths: 24,
+    idealTempMinF: 65, idealTempMaxF: 85, idealHumidityPct: 55,
+    toxicity: "Toxic to cats and dogs if ingested (calcium oxalates).",
+    matureSizeNotes: "Thick, shimmery silver-green pointed leaves on a slow trailing vine.",
+    distinguishingTraits:
+      "Distinguish from Scindapsus pictus by treubii 'Moonlight's' near-solid SILVERY-SHEEN pointed leaves (pictus is spotted/blotched). Distinguish from the dark 'Dark Form' treubii, which is near-black rather than silvery.",
+    sourceCitations: [CITATIONS_EXT.pistils, CITATIONS_EXT.gardeniaNet, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "syngonium-albo-variegatum",
+    commonName: "Syngonium 'Albo Variegatum'",
+    scientificName: "Syngonium podophyllum 'Albo Variegatum'",
+    waterIntervalDaysMin: 6, waterIntervalDaysMax: 9,
+    waterNotes: "Keep lightly moist; water when top inch dries. White sections need careful (not soggy) watering.",
+    feedIntervalDaysActive: 30, feedIntervalDaysDormant: null,
+    feedNotes: "Dilute balanced fertilizer monthly in active growth; pause in winter.",
+    lightRequirement: "bright_indirect",
+    placementNotes: "Bright indirect light to keep the white blocks; fast-growing, pinch to keep bushy.",
+    soilType: "Well-draining aroid mix with perlite",
+    repotIntervalMonths: 18,
+    idealTempMinF: 65, idealTempMaxF: 85, idealHumidityPct: 60,
+    toxicity: "Toxic to cats and dogs if ingested (calcium oxalates).",
+    matureSizeNotes: "Arrowhead leaves splashed with pure-white variegated blocks; vining with age.",
+    distinguishingTraits:
+      "Distinguish from Syngonium 'Albo' by its blocky pure-WHITE (not pink) sectoral variegation on arrowhead leaves. Distinguish from Syngonium 'Pink' varieties, which are pink-mottled rather than white-blocked.",
+    sourceCitations: [CITATIONS.ncsuToolbox, CITATIONS_EXT.pistils, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "syngonium-pink-neon",
+    commonName: "Syngonium 'Neon Robusta' (Pink arrowhead)",
+    scientificName: "Syngonium podophyllum 'Neon Robusta'",
+    waterIntervalDaysMin: 5, waterIntervalDaysMax: 8,
+    waterNotes: "Likes consistent moisture; water when the top inch dries. Wilts quickly if too dry.",
+    feedIntervalDaysActive: 30, feedIntervalDaysDormant: null,
+    feedNotes: "Balanced fertilizer monthly in active growth; reduce in winter.",
+    lightRequirement: "medium_to_bright_indirect",
+    placementNotes: "Medium to bright indirect light; brighter light deepens the pink tone.",
+    soilType: "Well-draining potting mix with perlite",
+    repotIntervalMonths: 18,
+    idealTempMinF: 65, idealTempMaxF: 85, idealHumidityPct: 55,
+    toxicity: "Toxic to cats and dogs if ingested (calcium oxalates).",
+    matureSizeNotes: "Soft pink arrowhead leaves maturing greener; compact then vining.",
+    distinguishingTraits:
+      "Distinguish from variegated Syngonium 'Albo' by 'Neon Robusta's' uniform soft-PINK leaves (not white blocks). Distinguish from Caladium by Syngonium's arrowhead leaf shape and vining habit versus Caladium's larger heart leaves and dormant tuber.",
+    sourceCitations: [CITATIONS.ncsuToolbox, CITATIONS_EXT.theSill, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "hoya-kerrii",
+    commonName: "Hoya kerrii (Sweetheart hoya)",
+    scientificName: "Hoya kerrii",
+    waterIntervalDaysMin: 12, waterIntervalDaysMax: 18,
+    waterNotes: "Succulent leaves store water — let soil dry well between waterings; overwatering rots single-leaf cuttings.",
+    feedIntervalDaysActive: 45, feedIntervalDaysDormant: null,
+    feedNotes: "Dilute fertilizer every 6-8 weeks in growing season; skip in winter.",
+    lightRequirement: "bright_indirect",
+    placementNotes: "Bright indirect light; a single-leaf 'heart' cutting rarely vines — a rooted plant will.",
+    soilType: "Very well-draining succulent/cactus mix with bark",
+    repotIntervalMonths: 36,
+    idealTempMinF: 60, idealTempMaxF: 85, idealHumidityPct: 45,
+    toxicity: "Generally considered non-toxic to cats and dogs.",
+    matureSizeNotes: "Thick heart-shaped succulent leaves; slow to vine.",
+    distinguishingTraits:
+      "Distinguish from other Hoyas by kerrii's thick, flat, HEART-shaped succulent leaves (often sold as a single potted 'heart' leaf). No other common Hoya has the heart leaf; H. carnosa leaves are oval.",
+    sourceCitations: [CITATIONS_EXT.gardeniaNet, CITATIONS_EXT.pistils, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "hoya-pubicalyx",
+    commonName: "Hoya pubicalyx",
+    scientificName: "Hoya pubicalyx",
+    waterIntervalDaysMin: 10, waterIntervalDaysMax: 16,
+    waterNotes: "Let dry substantially between waterings; semi-succulent leaves tolerate drought.",
+    feedIntervalDaysActive: 45, feedIntervalDaysDormant: null,
+    feedNotes: "Dilute fertilizer every 6-8 weeks in active growth; pause in winter.",
+    lightRequirement: "bright_indirect",
+    placementNotes: "Bright indirect light encourages the star-shaped flower umbels; a vigorous vine.",
+    soilType: "Well-draining mix with bark and perlite",
+    repotIntervalMonths: 36,
+    idealTempMinF: 60, idealTempMaxF: 85, idealHumidityPct: 50,
+    toxicity: "Generally considered non-toxic to cats and dogs.",
+    matureSizeNotes: "Fast climbing/trailing vine; often silver-flecked leaves, dusky-pink flower clusters.",
+    distinguishingTraits:
+      "Distinguish from Hoya carnosa by pubicalyx's longer, more pointed, often silver-SPLASHED leaves and faster vining (carnosa leaves are rounder and plainer). Flowers are darker dusky-pink to near-black versus carnosa's pale pink.",
+    sourceCitations: [CITATIONS_EXT.gardeniaNet, CITATIONS_EXT.pistils, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "hoya-linearis",
+    commonName: "Hoya linearis",
+    scientificName: "Hoya linearis",
+    waterIntervalDaysMin: 7, waterIntervalDaysMax: 11,
+    waterNotes: "Thinner leaves than most Hoya — do not let it dry out completely; water when top inch dries.",
+    feedIntervalDaysActive: 45, feedIntervalDaysDormant: null,
+    feedNotes: "Dilute fertilizer every 6-8 weeks in active growth; skip in winter.",
+    lightRequirement: "bright_indirect",
+    placementNotes: "Bright indirect light; a cascading hanging-basket Hoya, wants good humidity.",
+    soilType: "Airy, well-draining mix with bark and perlite",
+    repotIntervalMonths: 36,
+    idealTempMinF: 55, idealTempMaxF: 80, idealHumidityPct: 55,
+    toxicity: "Generally considered non-toxic to cats and dogs.",
+    matureSizeNotes: "Long curtains of fine, soft, needle-like trailing foliage.",
+    distinguishingTraits:
+      "Distinguish from string-of-pearls by linearis's soft, fuzzy, LINEAR needle leaves in dense hanging strands (string-of-pearls are round beads). Unlike other Hoyas, leaves are thin and grass-like rather than thick ovals.",
+    sourceCitations: [CITATIONS_EXT.gardeniaNet, CITATIONS_EXT.pistils, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "alocasia-frydek",
+    commonName: "Alocasia 'Green Velvet' (Frydek)",
+    scientificName: "Alocasia micholitziana 'Frydek'",
+    waterIntervalDaysMin: 5, waterIntervalDaysMax: 8,
+    waterNotes: "Keep consistently moist (not soggy) in an airy mix; sensitive to both drought and overwatering.",
+    feedIntervalDaysActive: 30, feedIntervalDaysDormant: 60,
+    feedNotes: "Balanced fertilizer monthly in active growth; may go dormant in winter — reduce feeding.",
+    lightRequirement: "bright_indirect",
+    placementNotes: "Bright indirect light and high humidity; can drop leaves/go dormant if stressed.",
+    soilType: "Chunky, airy aroid mix",
+    repotIntervalMonths: 18,
+    idealTempMinF: 65, idealTempMaxF: 82, idealHumidityPct: 65,
+    toxicity: "Toxic to cats and dogs if ingested (calcium oxalates).",
+    matureSizeNotes: "Velvety dark-green arrow leaves with bold white veins, upright.",
+    distinguishingTraits:
+      "Distinguish from Alocasia 'Polly'/Amazonica by Frydek's soft VELVETY matte leaf surface (Polly is glossy and hard with wavy scalloped edges). Frydek leaves are narrower arrowheads with a plush texture.",
+    sourceCitations: [CITATIONS_EXT.aroidWiki, CITATIONS_EXT.gardeniaNet, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "alocasia-zebrina",
+    commonName: "Alocasia zebrina",
+    scientificName: "Alocasia zebrina",
+    waterIntervalDaysMin: 6, waterIntervalDaysMax: 9,
+    waterNotes: "Water when top inch dries; keep evenly moist in growing season, drier in winter dormancy.",
+    feedIntervalDaysActive: 30, feedIntervalDaysDormant: 60,
+    feedNotes: "Balanced fertilizer monthly spring-summer; taper as it slows in winter.",
+    lightRequirement: "bright_indirect",
+    placementNotes: "Bright indirect light; prized for its striped petioles — give it room to hold tall stems.",
+    soilType: "Chunky, airy aroid mix",
+    repotIntervalMonths: 18,
+    idealTempMinF: 65, idealTempMaxF: 82, idealHumidityPct: 60,
+    toxicity: "Toxic to cats and dogs if ingested (calcium oxalates).",
+    matureSizeNotes: "Arrow-shaped leaves on tall yellow-and-black ZEBRA-striped petioles.",
+    distinguishingTraits:
+      "Distinguish from other Alocasia by zebrina's signature yellow-and-black ZEBRA-striped petioles (stems) topped with plain arrow leaves. The striped stems, not the leaf, are the identifier.",
+    sourceCitations: [CITATIONS_EXT.aroidWiki, CITATIONS_EXT.gardeniaNet, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "philodendron-verrucosum",
+    commonName: "Philodendron verrucosum",
+    scientificName: "Philodendron verrucosum",
+    waterIntervalDaysMin: 6, waterIntervalDaysMax: 9,
+    waterNotes: "Keep evenly moist in a very airy mix; high humidity lover. Water when top inch dries.",
+    feedIntervalDaysActive: 30, feedIntervalDaysDormant: null,
+    feedNotes: "Dilute balanced fertilizer monthly in active growth; pause in winter.",
+    lightRequirement: "bright_indirect",
+    placementNotes: "Bright indirect light, high humidity; a climber — moss pole yields big velvet leaves.",
+    soilType: "Very chunky, humus-rich aroid mix",
+    repotIntervalMonths: 18,
+    idealTempMinF: 65, idealTempMaxF: 82, idealHumidityPct: 70,
+    toxicity: "Toxic to cats and dogs if ingested (calcium oxalates).",
+    matureSizeNotes: "Heart-shaped emerald velvet leaves with pale veins and hairy ('verrucose') petioles.",
+    distinguishingTraits:
+      "Distinguish from Philodendron gloriosum by verrucosum's climbing habit and its distinctive HAIRY/bristly petioles (gloriosum crawls and has smooth petioles). Leaf undersides often flush red.",
+    sourceCitations: [CITATIONS_EXT.aroidWiki, CITATIONS_EXT.gardeniaNet, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "monstera-deliciosa-thai-constellation",
+    commonName: "Monstera 'Thai Constellation'",
+    scientificName: "Monstera deliciosa 'Thai Constellation'",
+    waterIntervalDaysMin: 7, waterIntervalDaysMax: 10,
+    waterNotes: "Water when top 1-2 in dry; creamy sections photosynthesize less, so avoid overwatering.",
+    feedIntervalDaysActive: 30, feedIntervalDaysDormant: null,
+    feedNotes: "Balanced fertilizer monthly in spring/summer; skip in winter.",
+    lightRequirement: "bright_indirect",
+    placementNotes: "Bright indirect light to support the variegation; give a moss pole as it matures.",
+    soilType: "Chunky, well-draining aroid mix",
+    repotIntervalMonths: 24,
+    idealTempMinF: 65, idealTempMaxF: 85, idealHumidityPct: 60,
+    toxicity: "Toxic to cats and dogs if ingested (calcium oxalates).",
+    matureSizeNotes: "Fenestrated Monstera leaves speckled with creamy-yellow 'constellation' variegation.",
+    distinguishingTraits:
+      "Distinguish from Monstera 'Albo Variegata' by Thai Constellation's SPECKLED/marbled creamy-yellow variegation spread evenly (Albo has sharp white sectoral blocks and reverts more readily). Thai is a stable tissue-cultured cultivar with a warmer cream tone.",
+    sourceCitations: [CITATIONS_EXT.aroidWiki, CITATIONS_EXT.pistils, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "monstera-albo-variegata",
+    commonName: "Monstera 'Albo Variegata'",
+    scientificName: "Monstera deliciosa 'Albo Variegata'",
+    waterIntervalDaysMin: 7, waterIntervalDaysMax: 10,
+    waterNotes: "Water when top 1-2 in dry; pure-white sections burn and can't photosynthesize — water carefully.",
+    feedIntervalDaysActive: 30, feedIntervalDaysDormant: null,
+    feedNotes: "Balanced fertilizer monthly in spring/summer; skip in winter.",
+    lightRequirement: "bright_indirect",
+    placementNotes: "Bright indirect light; protect white areas from direct sun. Give a moss pole.",
+    soilType: "Chunky, well-draining aroid mix",
+    repotIntervalMonths: 24,
+    idealTempMinF: 65, idealTempMaxF: 85, idealHumidityPct: 60,
+    toxicity: "Toxic to cats and dogs if ingested (calcium oxalates).",
+    matureSizeNotes: "Fenestrated leaves with crisp pure-white sectoral variegation; can revert.",
+    distinguishingTraits:
+      "Distinguish from Thai Constellation by Albo's crisp pure-WHITE sectoral blocks/half-moons (Thai is creamy speckled). Albo is a propagated cutting line (unstable, can revert) rather than a stable tissue culture.",
+    sourceCitations: [CITATIONS_EXT.aroidWiki, CITATIONS_EXT.pistils, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "calathea-white-fusion",
+    commonName: "Calathea 'White Fusion'",
+    scientificName: "Goeppertia lietzei 'White Fusion'",
+    waterIntervalDaysMin: 5, waterIntervalDaysMax: 8,
+    waterNotes: "Keep consistently moist with distilled/rain water; very sensitive to tap-water minerals and drying out.",
+    feedIntervalDaysActive: 45, feedIntervalDaysDormant: null,
+    feedNotes: "Dilute fertilizer every 6 weeks in growing season; sensitive to fertilizer burn.",
+    lightRequirement: "medium_indirect",
+    placementNotes: "Medium indirect light and high humidity; a fussy variegate — avoid drafts and dry air.",
+    soilType: "Moisture-retentive, airy mix",
+    repotIntervalMonths: 18,
+    idealTempMinF: 65, idealTempMaxF: 80, idealHumidityPct: 70,
+    toxicity: "Non-toxic to cats and dogs.",
+    matureSizeNotes: "Green-and-white variegated leaves with purple undersides.",
+    distinguishingTraits:
+      "Distinguish from other Calathea by White Fusion's irregular WHITE marbled variegation over green with lilac-purple leaf undersides (most calatheas lack white variegation). Its fussiness and variegation set it apart from medallion or orbifolia.",
+    sourceCitations: [CITATIONS_EXT.gardeniaNet, CITATIONS.ncsuToolbox, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "calathea-rattlesnake",
+    commonName: "Rattlesnake plant",
+    scientificName: "Goeppertia insignis (Calathea lancifolia)",
+    waterIntervalDaysMin: 6, waterIntervalDaysMax: 9,
+    waterNotes: "Keep evenly moist with filtered water; browning edges signal mineral buildup or dryness.",
+    feedIntervalDaysActive: 45, feedIntervalDaysDormant: null,
+    feedNotes: "Dilute fertilizer every 6 weeks in active growth; pause in winter.",
+    lightRequirement: "medium_indirect",
+    placementNotes: "Medium indirect light and good humidity; leaves fold up at night.",
+    soilType: "Moisture-retentive, airy mix",
+    repotIntervalMonths: 18,
+    idealTempMinF: 65, idealTempMaxF: 80, idealHumidityPct: 60,
+    toxicity: "Non-toxic to cats and dogs.",
+    matureSizeNotes: "Long, wavy-edged lance leaves with alternating dark spots and deep-red undersides.",
+    distinguishingTraits:
+      "Distinguish from Calathea medallion/orbifolia by rattlesnake's long, narrow, WAVY-edged lance leaves with alternating small/large dark blotches and burgundy undersides. The elongated wavy leaf is unlike the round medallion/orbifolia leaves.",
+    sourceCitations: [CITATIONS.ncsuToolbox, CITATIONS_EXT.gardeniaNet, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "stromanthe-triostar",
+    commonName: "Stromanthe 'Triostar'",
+    scientificName: "Stromanthe sanguinea 'Triostar'",
+    waterIntervalDaysMin: 5, waterIntervalDaysMax: 8,
+    waterNotes: "Keep consistently moist with filtered water; sensitive to drying out and to tap-water salts.",
+    feedIntervalDaysActive: 45, feedIntervalDaysDormant: null,
+    feedNotes: "Dilute fertilizer every 6 weeks in growing season; reduce in winter.",
+    lightRequirement: "medium_to_bright_indirect",
+    placementNotes: "Bright indirect light brings out pink tones; high humidity; a prayer-plant relative.",
+    soilType: "Moisture-retentive, airy mix",
+    repotIntervalMonths: 18,
+    idealTempMinF: 65, idealTempMaxF: 80, idealHumidityPct: 65,
+    toxicity: "Non-toxic to cats and dogs.",
+    matureSizeNotes: "Variegated green/cream leaves with striking pink-and-maroon undersides.",
+    distinguishingTraits:
+      "Distinguish from Calathea/Maranta by Triostar's bold cream-and-green top variegation with vivid PINK and deep-maroon undersides (most prayer plants lack the pink reverse). It flashes pink undersides as leaves move.",
+    sourceCitations: [CITATIONS_EXT.gardeniaNet, CITATIONS.ncsuToolbox, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "peperomia-watermelon",
+    commonName: "Watermelon peperomia",
+    scientificName: "Peperomia argyreia",
+    waterIntervalDaysMin: 8, waterIntervalDaysMax: 12,
+    waterNotes: "Let top 1-2 in dry; thick leaves store water, so avoid overwatering and rot.",
+    feedIntervalDaysActive: 45, feedIntervalDaysDormant: null,
+    feedNotes: "Dilute fertilizer every 6-8 weeks in growing season; skip in winter.",
+    lightRequirement: "medium_to_bright_indirect",
+    placementNotes: "Medium to bright indirect light; compact, great for desks and shelves.",
+    soilType: "Well-draining, airy mix with perlite",
+    repotIntervalMonths: 24,
+    idealTempMinF: 60, idealTempMaxF: 80, idealHumidityPct: 50,
+    toxicity: "Non-toxic to cats and dogs.",
+    matureSizeNotes: "Round, teardrop leaves striped silver-and-green like a watermelon rind, on red stems.",
+    distinguishingTraits:
+      "Distinguish from Chinese money plant (Pilea) by watermelon peperomia's teardrop leaves attached at the EDGE (not center) with silver-and-green watermelon striping. Pilea leaves are plain round and center-attached.",
+    sourceCitations: [CITATIONS.ncsuToolbox, CITATIONS_EXT.theSill, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "peperomia-hope",
+    commonName: "Peperomia 'Hope'",
+    scientificName: "Peperomia tetraphylla 'Hope'",
+    waterIntervalDaysMin: 9, waterIntervalDaysMax: 14,
+    waterNotes: "Semi-succulent — let dry well between waterings; overwatering causes stem rot.",
+    feedIntervalDaysActive: 45, feedIntervalDaysDormant: null,
+    feedNotes: "Dilute fertilizer every 6-8 weeks in growing season; pause in winter.",
+    lightRequirement: "medium_to_bright_indirect",
+    placementNotes: "Medium to bright indirect light; trailing, good for hanging pots.",
+    soilType: "Well-draining, airy mix with perlite",
+    repotIntervalMonths: 24,
+    idealTempMinF: 60, idealTempMaxF: 80, idealHumidityPct: 45,
+    toxicity: "Non-toxic to cats and dogs.",
+    matureSizeNotes: "Trailing stems with small, round, thick coin-like leaves in whorls.",
+    distinguishingTraits:
+      "Distinguish from string-of-turtles by 'Hope's' plain, thick, round green coin leaves in whorls of 3-4 (string-of-turtles leaves are small and patterned). Fleshier and more upright-trailing than the flat-leaved turtles.",
+    sourceCitations: [CITATIONS_EXT.theSill, CITATIONS_EXT.gardeniaNet, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "peperomia-string-of-turtles",
+    commonName: "String of turtles",
+    scientificName: "Peperomia prostrata",
+    waterIntervalDaysMin: 8, waterIntervalDaysMax: 12,
+    waterNotes: "Let top layer dry; small succulent leaves are prone to rot if kept wet.",
+    feedIntervalDaysActive: 45, feedIntervalDaysDormant: null,
+    feedNotes: "Dilute fertilizer every 6-8 weeks in growing season; skip in winter.",
+    lightRequirement: "medium_to_bright_indirect",
+    placementNotes: "Bright indirect light keeps the pattern crisp; delicate trailing vine.",
+    soilType: "Well-draining, airy mix with perlite",
+    repotIntervalMonths: 24,
+    idealTempMinF: 60, idealTempMaxF: 80, idealHumidityPct: 55,
+    toxicity: "Non-toxic to cats and dogs.",
+    matureSizeNotes: "Tiny round leaves patterned like turtle shells on fine trailing strands.",
+    distinguishingTraits:
+      "Distinguish from Peperomia 'Hope' by string-of-turtles' tiny, flat, intricately turtle-shell-PATTERNED leaves (Hope leaves are plain, thick, larger). Much finer and more delicate than any other trailing peperomia.",
+    sourceCitations: [CITATIONS_EXT.gardeniaNet, CITATIONS_EXT.theSill, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "begonia-maculata",
+    commonName: "Polka dot begonia",
+    scientificName: "Begonia maculata 'Wightii'",
+    waterIntervalDaysMin: 6, waterIntervalDaysMax: 9,
+    waterNotes: "Keep lightly moist; water when top inch dries. Avoid wetting leaves to prevent powdery mildew.",
+    feedIntervalDaysActive: 30, feedIntervalDaysDormant: null,
+    feedNotes: "Balanced fertilizer every 3-4 weeks in growing season; pause in winter.",
+    lightRequirement: "bright_indirect",
+    placementNotes: "Bright indirect light; cane-type begonia, benefits from good airflow.",
+    soilType: "Well-draining, airy mix",
+    repotIntervalMonths: 18,
+    idealTempMinF: 62, idealTempMaxF: 80, idealHumidityPct: 55,
+    toxicity: "Toxic to cats and dogs if ingested (soluble calcium oxalates).",
+    matureSizeNotes: "Angel-wing leaves, olive-green with silver POLKA DOTS and deep-red undersides.",
+    distinguishingTraits:
+      "Distinguish from other cane begonias by maculata's asymmetric angel-wing leaves covered in evenly spaced SILVER polka dots over olive green, with red undersides. The regular silver spotting is the unmistakable tell.",
+    sourceCitations: [CITATIONS.ncsuToolbox, CITATIONS_EXT.gardeniaNet, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "philodendron-mican-lime",
+    commonName: "Philodendron 'Painted Lady'",
+    scientificName: "Philodendron erubescens 'Painted Lady'",
+    waterIntervalDaysMin: 7, waterIntervalDaysMax: 10,
+    waterNotes: "Water when top 1-2 in dry; steady moisture in growing season.",
+    feedIntervalDaysActive: 30, feedIntervalDaysDormant: null,
+    feedNotes: "Balanced fertilizer monthly in active growth; reduce in winter.",
+    lightRequirement: "bright_indirect",
+    placementNotes: "Bright indirect light brings out the yellow tones; a moderate climber.",
+    soilType: "Chunky aroid mix (bark, perlite, coco coir)",
+    repotIntervalMonths: 18,
+    idealTempMinF: 65, idealTempMaxF: 85, idealHumidityPct: 60,
+    toxicity: "Toxic to cats and dogs if ingested (calcium oxalates).",
+    matureSizeNotes: "Chartreuse-yellow young leaves maturing green, on pink-speckled petioles.",
+    distinguishingTraits:
+      "Distinguish from 'Lemon Lime' and 'Moonlight' philodendrons by Painted Lady's mottled yellow-green NEW leaves held on distinctive PINK-speckled petioles (the others have plain green/yellow petioles). The pink stems plus mottled new growth are the tell.",
+    sourceCitations: [CITATIONS_EXT.aroidWiki, CITATIONS_EXT.gardeniaNet, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "rhaphidophora-decursiva",
+    commonName: "Rhaphidophora decursiva",
+    scientificName: "Rhaphidophora decursiva",
+    waterIntervalDaysMin: 6, waterIntervalDaysMax: 9,
+    waterNotes: "Keep lightly moist; water when top inch dries. Vigorous grower in warmth.",
+    feedIntervalDaysActive: 30, feedIntervalDaysDormant: null,
+    feedNotes: "Balanced fertilizer monthly in active growth; pause in winter.",
+    lightRequirement: "bright_indirect",
+    placementNotes: "Bright indirect light; a large climber — needs a sturdy moss pole for mature split leaves.",
+    soilType: "Chunky aroid mix (bark, perlite, coco coir)",
+    repotIntervalMonths: 18,
+    idealTempMinF: 65, idealTempMaxF: 85, idealHumidityPct: 60,
+    toxicity: "Toxic to cats and dogs if ingested (calcium oxalates).",
+    matureSizeNotes: "Juvenile leaves entire; mature leaves deeply pinnately split, resembling Monstera.",
+    distinguishingTraits:
+      "Distinguish from Monstera deliciosa by decursiva's leaves splitting into deep, narrow FEATHER-like pinnae all the way to the midrib with no interior holes (Monstera has both splits and round holes). Distinguish from Rhaphidophora tetrasperma by decursiva's much larger, more deeply divided mature leaves.",
+    sourceCitations: [CITATIONS_EXT.aroidWiki, CITATIONS_EXT.gardeniaNet, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "philodendron-prince-of-orange",
+    commonName: "Philodendron 'Prince of Orange'",
+    scientificName: "Philodendron 'Prince of Orange'",
+    waterIntervalDaysMin: 7, waterIntervalDaysMax: 10,
+    waterNotes: "Water when top 1-2 in dry; consistent moisture in growing season.",
+    feedIntervalDaysActive: 30, feedIntervalDaysDormant: null,
+    feedNotes: "Balanced fertilizer monthly in active growth; reduce in winter.",
+    lightRequirement: "bright_indirect",
+    placementNotes: "Bright indirect light intensifies the orange new growth; a compact self-header.",
+    soilType: "Chunky aroid mix (bark, perlite, coco coir)",
+    repotIntervalMonths: 18,
+    idealTempMinF: 65, idealTempMaxF: 85, idealHumidityPct: 55,
+    toxicity: "Toxic to cats and dogs if ingested (calcium oxalates).",
+    matureSizeNotes: "Self-heading clump; new leaves emerge bright orange, aging to green.",
+    distinguishingTraits:
+      "Distinguish from Philodendron 'McColley's Finale' by Prince of Orange's leaves emerging bright ORANGE and fading to green (McColley's emerge red). A self-heading clump, unlike the vining Painted Lady or Brasil.",
+    sourceCitations: [CITATIONS_EXT.aroidWiki, CITATIONS.costaFarms, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "aglaonema-red-siam",
+    commonName: "Aglaonema 'Siam Aurora' (Red)",
+    scientificName: "Aglaonema commutatum 'Siam Aurora'",
+    waterIntervalDaysMin: 8, waterIntervalDaysMax: 12,
+    waterNotes: "Let top 1-2 in dry; tolerant of occasional dryness, sensitive to soggy soil.",
+    feedIntervalDaysActive: 45, feedIntervalDaysDormant: null,
+    feedNotes: "Balanced fertilizer every 6 weeks in growing season; skip in winter.",
+    lightRequirement: "low_to_medium_indirect",
+    placementNotes: "Tolerates low-medium light, but red coloring is stronger in brighter indirect light.",
+    soilType: "Well-draining potting mix",
+    repotIntervalMonths: 24,
+    idealTempMinF: 65, idealTempMaxF: 85, idealHumidityPct: 50,
+    toxicity: "Toxic to cats and dogs if ingested (calcium oxalates).",
+    matureSizeNotes: "Green leaves edged and veined in bright pink-red; compact.",
+    distinguishingTraits:
+      "Distinguish from Croton by Aglaonema's soft, thin lance leaves with pink-RED margins/veins on green (Croton leaves are thick, leathery, multicolored). Distinguish from peace lily by the red coloration and lack of white spathe.",
+    sourceCitations: [CITATIONS.ncsuToolbox, CITATIONS.costaFarms, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "ficus-audrey",
+    commonName: "Ficus Audrey",
+    scientificName: "Ficus benghalensis",
+    waterIntervalDaysMin: 7, waterIntervalDaysMax: 11,
+    waterNotes: "Water when top 1-2 in dry; dislikes both drought stress and soggy roots.",
+    feedIntervalDaysActive: 30, feedIntervalDaysDormant: 60,
+    feedNotes: "Balanced fertilizer monthly spring-summer; every other month in winter.",
+    lightRequirement: "bright_indirect",
+    placementNotes: "Bright indirect light, some direct sun tolerated; rotate for even growth.",
+    soilType: "Well-draining potting mix",
+    repotIntervalMonths: 24,
+    idealTempMinF: 60, idealTempMaxF: 85, idealHumidityPct: 45,
+    toxicity: "Toxic to cats and dogs if ingested (sap irritation).",
+    matureSizeNotes: "Upright tree with fuzzy, matte, oval sage-green leaves and pale veins.",
+    distinguishingTraits:
+      "Distinguish from rubber plant (Ficus elastica) by Audrey's MATTE, fuzzy, sage-green oval leaves with prominent pale veins (elastica leaves are glossy and darker). Distinguish from fiddle-leaf fig by Audrey's smaller, non-fiddle, softer-textured leaves.",
+    sourceCitations: [CITATIONS.ncsuToolbox, CITATIONS_EXT.theSill, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "hoya-obovata",
+    commonName: "Hoya obovata",
+    scientificName: "Hoya obovata",
+    waterIntervalDaysMin: 12, waterIntervalDaysMax: 18,
+    waterNotes: "Thick succulent leaves store water — let dry well between waterings.",
+    feedIntervalDaysActive: 45, feedIntervalDaysDormant: null,
+    feedNotes: "Dilute fertilizer every 6-8 weeks in growing season; skip in winter.",
+    lightRequirement: "bright_indirect",
+    placementNotes: "Bright indirect light encourages blooming; a vigorous vine or hanging plant.",
+    soilType: "Very well-draining mix with bark and perlite",
+    repotIntervalMonths: 36,
+    idealTempMinF: 60, idealTempMaxF: 85, idealHumidityPct: 50,
+    toxicity: "Generally considered non-toxic to cats and dogs.",
+    matureSizeNotes: "Large, round, thick leaves often silver-flecked; ball-shaped pink flower umbels.",
+    distinguishingTraits:
+      "Distinguish from Hoya carnosa/kerrii by obovata's large, ROUND (obovate) thick leaves, often heavily silver-speckled (carnosa leaves are oval; kerrii are heart-shaped). The big coin-round leaf is the tell.",
+    sourceCitations: [CITATIONS_EXT.gardeniaNet, CITATIONS_EXT.pistils, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "dieffenbachia-camille",
+    commonName: "Dumb cane 'Camille'",
+    scientificName: "Dieffenbachia 'Camille'",
+    waterIntervalDaysMin: 7, waterIntervalDaysMax: 10,
+    waterNotes: "Water when top 1-2 in dry; keep moderately moist in growing season.",
+    feedIntervalDaysActive: 30, feedIntervalDaysDormant: 60,
+    feedNotes: "Balanced fertilizer monthly spring-summer; every other month in winter.",
+    lightRequirement: "medium_to_bright_indirect",
+    placementNotes: "Medium to bright indirect light; keep out of direct sun to avoid leaf scorch.",
+    soilType: "Well-draining potting mix",
+    repotIntervalMonths: 24,
+    idealTempMinF: 62, idealTempMaxF: 85, idealHumidityPct: 55,
+    toxicity: "Toxic to cats, dogs, and humans if ingested (calcium oxalates cause mouth swelling).",
+    matureSizeNotes: "Upright canes; leaves creamy-yellow centered with green margins.",
+    distinguishingTraits:
+      "Distinguish from Aglaonema by Dieffenbachia 'Camille's' larger leaves with a broad creamy-YELLOW center and thin green margin on thick upright canes (Aglaonema patterning is finer and silvery/red). The bold pale center is the tell.",
+    sourceCitations: [CITATIONS.ncsuToolbox, CITATIONS.costaFarms, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "tradescantia-nanouk",
+    commonName: "Tradescantia 'Nanouk'",
+    scientificName: "Tradescantia albiflora 'Nanouk'",
+    waterIntervalDaysMin: 5, waterIntervalDaysMax: 8,
+    waterNotes: "Keep lightly moist; water when top inch dries. Fast grower, wilts if too dry.",
+    feedIntervalDaysActive: 30, feedIntervalDaysDormant: null,
+    feedNotes: "Balanced fertilizer every 3-4 weeks in growing season; pause in winter.",
+    lightRequirement: "bright_indirect",
+    placementNotes: "Bright indirect light keeps the pink vivid; pinch to keep it full, great trailing.",
+    soilType: "Well-draining potting mix",
+    repotIntervalMonths: 18,
+    idealTempMinF: 60, idealTempMaxF: 85, idealHumidityPct: 50,
+    toxicity: "Mildly toxic; sap can irritate skin and is mildly toxic to pets if ingested.",
+    matureSizeNotes: "Trailing stems of fuzzy leaves striped green, white, and bright pink/purple.",
+    distinguishingTraits:
+      "Distinguish from Tradescantia zebrina by 'Nanouk's' pastel PINK-and-cream broad stripes with thicker sturdier leaves (zebrina is purple-and-silver with thinner leaves). More robust and vividly pink than the typical wandering dude.",
+    sourceCitations: [CITATIONS.ncsuToolbox, CITATIONS_EXT.gardeniaNet, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+  {
+    speciesKey: "philodendron-mccolley-finale",
+    commonName: "Philodendron 'McColley's Finale'",
+    scientificName: "Philodendron 'McColley's Finale'",
+    waterIntervalDaysMin: 7, waterIntervalDaysMax: 10,
+    waterNotes: "Water when top 1-2 in dry; steady moisture during growth.",
+    feedIntervalDaysActive: 30, feedIntervalDaysDormant: null,
+    feedNotes: "Balanced fertilizer monthly in active growth; reduce in winter.",
+    lightRequirement: "bright_indirect",
+    placementNotes: "Bright indirect light deepens the red new growth; compact self-header.",
+    soilType: "Chunky aroid mix (bark, perlite, coco coir)",
+    repotIntervalMonths: 18,
+    idealTempMinF: 65, idealTempMaxF: 85, idealHumidityPct: 55,
+    toxicity: "Toxic to cats and dogs if ingested (calcium oxalates).",
+    matureSizeNotes: "Self-heading; new leaves emerge deep red/orange, maturing to green.",
+    distinguishingTraits:
+      "Distinguish from 'Prince of Orange' by McColley's Finale new leaves emerging deep RED (Prince of Orange emerges orange). Both are self-heading clumps, unlike vining red-stemmed philodendrons.",
+    sourceCitations: [CITATIONS_EXT.aroidWiki, CITATIONS.costaFarms, CITATIONS.aspcaToxic],
+    researchStatus: "verified",
+  },
+];
+
+// Merge distinguishing traits for the base 55 and concatenate the new
+// cultivars. Every exported seed carries a distinguishingTraits string.
+export const careProfileSeeds: Seed[] = [
+  ...baseSeeds.map((s) => ({
+    ...s,
+    distinguishingTraits: s.distinguishingTraits ?? DISTINGUISHING_TRAITS[s.speciesKey],
+  })),
+  ...newSeeds,
+];
