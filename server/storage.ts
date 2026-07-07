@@ -107,10 +107,14 @@ CREATE TABLE IF NOT EXISTS care_profiles (
   ideal_humidity_pct INTEGER,
   toxicity TEXT,
   mature_size_notes TEXT,
+  distinguishing_traits TEXT,
   source_citations TEXT NOT NULL,
   research_status TEXT NOT NULL DEFAULT 'seed',
   research_notes TEXT
 );
+
+-- Idempotent add for databases created before distinguishing_traits existed.
+ALTER TABLE care_profiles ADD COLUMN IF NOT EXISTS distinguishing_traits TEXT;
 
 CREATE TABLE IF NOT EXISTS plants (
   id SERIAL PRIMARY KEY,
@@ -212,9 +216,21 @@ async function bootstrap() {
     console.log("[storage] Seeded default free-tier user row.");
   }
 
-  if ((await count("care_profiles")) === 0) {
+  // Upsert-by-speciesKey rather than an all-or-nothing "seed only when empty"
+  // step: a production database already holds the original rows, so this both
+  // (a) inserts any newly-added species/cultivars on deploy and (b) backfills
+  // the distinguishing_traits column (added later) onto pre-existing rows that
+  // predate it. All of this is idempotent — re-running touches nothing already
+  // in its target state.
+  const existingProfiles = await db
+    .select({ speciesKey: careProfiles.speciesKey, distinguishingTraits: careProfiles.distinguishingTraits })
+    .from(careProfiles);
+  const existingByKey = new Map(existingProfiles.map((p) => [p.speciesKey, p]));
+
+  const missing = careProfileSeeds.filter((s) => !existingByKey.has(s.speciesKey));
+  if (missing.length > 0) {
     await db.insert(careProfiles).values(
-      careProfileSeeds.map((s) => ({
+      missing.map((s) => ({
         speciesKey: s.speciesKey,
         commonName: s.commonName,
         scientificName: s.scientificName,
@@ -233,12 +249,32 @@ async function bootstrap() {
         idealHumidityPct: s.idealHumidityPct ?? null,
         toxicity: s.toxicity ?? null,
         matureSizeNotes: s.matureSizeNotes ?? null,
+        distinguishingTraits: s.distinguishingTraits ?? null,
         sourceCitations: JSON.stringify(s.sourceCitations),
-        researchStatus: "seed",
+        researchStatus: s.researchStatus ?? "seed",
         researchNotes: null,
       }))
     );
-    console.log(`[storage] Seeded ${careProfileSeeds.length} care_profiles rows.`);
+    console.log(`[storage] Inserted ${missing.length} new care_profiles rows.`);
+  }
+
+  // Backfill distinguishing_traits (and refresh research_status) onto rows that
+  // predate those fields. Only rows currently missing the trait are updated, so
+  // this converges to a no-op once every row is populated.
+  let backfilled = 0;
+  for (const seed of careProfileSeeds) {
+    if (!seed.distinguishingTraits) continue;
+    const existing = existingByKey.get(seed.speciesKey);
+    if (existing && !existing.distinguishingTraits) {
+      await db
+        .update(careProfiles)
+        .set({ distinguishingTraits: seed.distinguishingTraits, researchStatus: seed.researchStatus ?? "seed" })
+        .where(eq(careProfiles.speciesKey, seed.speciesKey));
+      backfilled++;
+    }
+  }
+  if (backfilled > 0) {
+    console.log(`[storage] Backfilled distinguishing_traits on ${backfilled} existing care_profiles rows.`);
   }
 
   if ((await count("affiliate_links")) === 0) {

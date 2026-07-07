@@ -2,7 +2,8 @@ import type { Express } from "express";
 import { createServer } from "node:http";
 import type { Server } from "node:http";
 import { storage, dbReady } from "./storage";
-import { identifyPlant } from "./plant-id";
+import { identifyPlant, identifyTag, type PlantSuggestion } from "./plant-id";
+import { matchCareProfile, searchCareProfiles } from "./care-match";
 import { computeSchedule } from "./care-scheduling";
 import { getWeatherSnapshot, reverseGeocode, approximateHardinessZone } from "./weather";
 import { findNearbyNurseries } from "./nurseries";
@@ -37,18 +38,58 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // -------------------------------------------------------------------------
-  // Plant identification — Plant.id integration (server/plant-id.ts).
-  // Accepts a base64 image string; returns top 3-5 candidate suggestions.
+  // Plant identification — vision LLM (server/plant-id.ts) cross-checked
+  // against our care_profiles reference table. Accepts a base64 image; returns
+  // the top 3 candidates, each enriched with the matched care profile (or a
+  // "not in our database yet" flag) plus the distinguishing traits that back
+  // the pick, for the UI's "Best matches / Top 3 if unsure" section.
   // -------------------------------------------------------------------------
   app.post("/api/identify", async (req, res) => {
     const { imageBase64 } = req.body ?? {};
     try {
       const result = await identifyPlant(imageBase64 ?? null);
-      res.json(result);
+      const suggestions = await crossCheckSuggestions(result.suggestions);
+      res.json({ ...result, suggestions });
     } catch (err: any) {
       res.status(500).json({ error: err?.message ?? "Identification failed" });
     }
   });
+
+  // Tag/label OCR path: a photo specifically of the plant's nursery tag. The
+  // printed name is a high-confidence shortcut — we read it and match it to a
+  // care profile the same way a confirmed photo match resolves.
+  app.post("/api/identify-tag", async (req, res) => {
+    const { imageBase64 } = req.body ?? {};
+    try {
+      const read = await identifyTag(imageBase64 ?? null);
+      const profiles = await storage.listCareProfiles();
+      const nameForMatch = read.scientificName || read.commonName || read.rawText || "";
+      const matched = nameForMatch ? matchCareProfile(nameForMatch, profiles) : undefined;
+      res.json({
+        ...read,
+        match: matched ? withParsedCitations(matched) : null,
+        inDatabase: !!matched,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message ?? "Tag read failed" });
+    }
+  });
+
+  // Cross-check a vision candidate list against care_profiles, linking each to
+  // a real profile by fuzzy name match and flagging any that aren't known yet.
+  async function crossCheckSuggestions(suggestions: PlantSuggestion[]) {
+    const profiles = await storage.listCareProfiles();
+    return suggestions.map((s) => {
+      const matched = matchCareProfile(s.scientificName || s.commonName, profiles);
+      return {
+        ...s,
+        careProfileId: matched?.id ?? null,
+        speciesKey: matched?.speciesKey ?? null,
+        inDatabase: !!matched,
+        distinguishingTraits: matched?.distinguishingTraits ?? null,
+      };
+    });
+  }
 
   // -------------------------------------------------------------------------
   // Care profiles (species reference data — read-only from the client)
@@ -62,6 +103,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const name = String(req.query.name ?? "");
     const profile = await storage.findCareProfileByName(name);
     res.json(profile ? withParsedCitations(profile) : null);
+  });
+
+  // Manual name search — powers the scan page's "Know the name? Search instead"
+  // fallback. Fuzzy ranks over commonName/scientificName/speciesKey.
+  app.get("/api/care-profiles/search", async (req, res) => {
+    const q = String(req.query.q ?? "").trim();
+    if (!q) return res.json([]);
+    const profiles = await storage.listCareProfiles();
+    res.json(searchCareProfiles(q, profiles).map(withParsedCitations));
   });
 
   function withParsedCitations(p: any) {
